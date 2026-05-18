@@ -11,30 +11,31 @@ import requests
 
 CLIENT_ID = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
 SCOPES = ["https://graph.microsoft.com/Files.Read"]
+dest_path = os.path.abspath("./down")
 
 
-def _download_children(item_id, drive_id, app, session, dest_dir):
+def _download_children(item_id, drive_id, app, session, dest_dir, dest_root):
     os.makedirs(dest_dir, exist_ok=True)
-    print(f"FOLDER {dest_dir}")
+    print(f"FOLDER: {dest_dir.replace(dest_root, '.')}")
     token = refresh_token(app)
     for item in list_children(item_id, drive_id, token):
         dest_path = os.path.join(dest_dir, item["name"])
         if "folder" in item:
-            _download_children(item["id"], drive_id, app, session, dest_path)
+            _download_children(item["id"], drive_id, app, session, dest_path, dest_root)
         elif "file" in item:
-            download_file(item, drive_id, dest_path, app, session)
+            download_file(item, drive_id, dest_path, dest_root, app, session)
 
 
-def download_file(item, drive_id, dest_path, app, session):
+def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     if is_complete(dest_path, expected_size, expected_mtime):
-        print(f"SKIP:\t{dest_path}")
+        print(f"(SKIP): {dest_path.replace(dest_root, '.')}")
         return
     # refresh token + downloadUrl per file (both expire ~1hr)
     token = refresh_token(app)
     fresh = get_item(item["id"], drive_id, token)
-    print(f"GET:\t{dest_path}  ({expected_size:,} bytes)")
+    print(f"FILE: {dest_path.replace(dest_root, '.')}  ({expected_size:,} bytes)")
     stream_with_retry(
         fresh["@microsoft.graph.downloadUrl"], dest_path, expected_mtime, session
     )
@@ -44,8 +45,9 @@ def download_folder(sharing_url, app, dest_dir):
     token = refresh_token(app)
     root = get_root_item(sharing_url, token)
     drive_id = root["parentReference"]["driveId"]
+    dest_root = os.path.dirname(dest_dir)
     with requests.Session() as session:
-        _download_children(root["id"], drive_id, app, session, dest_dir)
+        _download_children(root["id"], drive_id, app, session, dest_dir, dest_root)
 
 
 def encode_sharing_url(url):
@@ -67,11 +69,11 @@ def get_access_token():
     # fall back to device code flow
     flow = app.initiate_device_flow(scopes=SCOPES)
     webbrowser.open("https://microsoft.com/devicelogin")
-    print(f"Microsoft: {flow['message']}", end=os.linesep)
+    print(f'"{flow["message"]}" - Microsoft', end=2 * os.linesep)
     pyperclip.copy(flow["user_code"])
     print(
-        f"-> Access code copied to clipboad. Choose account and confirm download!",
-        end=os.linesep,
+        f"# Access code copied to clipboad. Choose account and confirm download!",
+        end=2 * os.linesep,
     )
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" not in result:
@@ -83,7 +85,7 @@ def get_item(item_id, drive_id, token):
     # no $select - downloadUrl comes by default for file items
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers, timeout=30)
+    resp = requests.get(url, headers=headers, timeout=60)
     resp.raise_for_status()
     return resp.json()
 
@@ -106,7 +108,7 @@ def is_complete(dest_path, expected_size, expected_mtime):
         return False
     if os.path.getsize(dest_path) != expected_size:
         return False
-    return abs(os.path.getmtime(dest_path) - expected_mtime) <= 2
+    return abs(os.path.getmtime(dest_path) - expected_mtime) == 0
 
 
 def list_children(item_id, drive_id, token):
@@ -146,7 +148,7 @@ def stream_with_retry(url, dest_path, mtime, session, max_attempts=5):
                 r.raise_for_status()
                 mode = "ab" if resume_from else "wb"
                 with open(part_path, mode) as f:
-                    for chunk in r.iter_content(chunk_size=4 * 1024 * 1024):
+                    for chunk in r.iter_content(chunk_size=4_194_304):  # 4 MiB
                         f.write(chunk)
             os.replace(part_path, dest_path)
             os.utime(dest_path, (mtime, mtime))
@@ -168,7 +170,12 @@ def stream_with_retry(url, dest_path, mtime, session, max_attempts=5):
         time.sleep(wait)
 
 
+# access OneDrive data
 with open("anyone.url", "r") as url_file:
     url_str = url_file.readline().strip()
 app = get_access_token()
-download_folder(url_str, app, os.path.abspath("./down"))
+
+# download OneDrive data
+print(f"@ {os.path.dirname(dest_path)}", end=2 * os.linesep)
+download_folder(url_str, app, dest_path)
+print()
