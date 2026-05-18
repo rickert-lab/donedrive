@@ -1,2 +1,6 @@
 # Specify filepatterns you want git to ignore.
+/down
+*.swp
 *.url
+.DS_Store
+tags
