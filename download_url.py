@@ -21,7 +21,7 @@ def _download_objects(
     item_id, drive_id, app, session, dest_dir, dest_root, executor, futures
 ):
     os.makedirs(dest_dir, exist_ok=True)
-    print(f"FOLDER: {os.path.sep + os.path.relpath(dest_dir, dest_root)}")
+    print(f"DIR:  {os.path.sep + os.path.relpath(dest_dir, dest_root)}")
     token = refresh_token(app)
     for item in list_objects(item_id, drive_id, token):
         dest_path = os.path.join(dest_dir, item["name"])
@@ -48,16 +48,17 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     if is_complete(dest_path, expected_size, expected_mtime):
-        print(f"(SKIP): {os.path.sep + os.path.relpath(dest_path, dest_root)}")
+        print(
+            f"FILE: {os.path.sep + os.path.relpath(dest_path, dest_root)} [skip]",
+            flush=True,
+        )
         return
-    # refresh token + downloadUrl per file (both expire ~1hr)
-    token = refresh_token(app)
-    fresh = get_item(item["id"], drive_id, token)
     print(
-        f"FILE: {os.path.sep + os.path.relpath(dest_path, dest_root)}  ({expected_size:,} bytes)"
+        f"FILE: {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}]",
+        flush=True,
     )
     stream_with_retry(
-        fresh["@microsoft.graph.downloadUrl"], dest_path, expected_mtime, session
+        item, drive_id, dest_path, expected_mtime, expected_size, app, session
     )
 
 
@@ -65,24 +66,46 @@ def download_folder(sharing_url, app, dest_dir):
     token = refresh_token(app)
     root = get_root_item(sharing_url, token)
     drive_id = root["parentReference"]["driveId"]
-    dest_root = os.path.dirname(dest_dir)
     futures = []
     with (
         requests.Session() as session,
         ThreadPoolExecutor(max_workers=max_concurrent) as executor,
     ):
         _download_objects(
-            root["id"], drive_id, app, session, dest_dir, dest_root, executor, futures
+            root["id"],
+            drive_id,
+            app,
+            session,
+            dest_dir,
+            os.path.dirname(dest_dir),  # dest_root
+            executor,
+            futures,
         )
     # surface exceptions from worker threads (with-block already waited for all)
+    errors = []
     for f in futures:
-        f.result()
+        try:
+            f.result()
+        except Exception as e:
+            errors.append(e)
+    if errors:
+        for e in errors:
+            print(f"ERROR: {e}")
+        raise errors[0]
 
 
 def encode_sharing_url(url):
     # Microsoft Graph API requires base64url encoding with u! prefix
     encoded = base64.urlsafe_b64encode(url.encode()).rstrip(b"=").decode()
     return "u!" + encoded
+
+
+def byte_size(num_bytes):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if num_bytes < 1024:
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} PB"
 
 
 def get_access_token():
@@ -159,29 +182,41 @@ def parse_mtime(iso_str):
 
 
 def refresh_token(app):
-    # msal returns cached token if still valid, refreshes otherwise
     accounts = app.get_accounts()
-    result = app.acquire_token_silent(scopes, account=accounts[0])
+    result = app.acquire_token_silent(scopes, account=accounts[0]) if accounts else None
     if not result or "access_token" not in result:
         raise RuntimeError("token refresh failed - re-authenticate")
     return result["access_token"]
 
 
-def stream_with_retry(url, dest_path, mtime, session, max_attempts=5):
+def stream_with_retry(
+    item, drive_id, dest_path, mtime, expected_size, app, session, max_attempts=5
+):
     part_path = dest_path + ".part"
+    url = None
     for attempt in range(max_attempts):
         try:
+            if url is None:
+                token = refresh_token(app)
+                url = get_item(item["id"], drive_id, token)[
+                    "@microsoft.graph.downloadUrl"
+                ]
             resume_from = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
             with session.get(url, headers=headers, stream=True, timeout=60) as r:
                 r.raise_for_status()
-                # server may ignore Range and return 200 with full content
                 if resume_from and r.status_code != 206:
                     resume_from = 0
                 mode = "ab" if resume_from else "wb"
                 with open(part_path, mode) as f:
-                    for chunk in r.iter_content(chunk_size=4_194_304):  # 4 MiB
+                    for chunk in r.iter_content(chunk_size=4_194_304):
                         f.write(chunk)
+            if os.path.getsize(part_path) != expected_size:
+                actual_size = os.path.getsize(part_path)
+                os.remove(part_path)
+                raise IOError(
+                    f"ERROR: File size is {byte_size(actual_size)}, but expected {byte_size(expected_size)}."
+                )
             os.replace(part_path, dest_path)
             os.utime(dest_path, (mtime, mtime))
             return
@@ -191,10 +226,12 @@ def stream_with_retry(url, dest_path, mtime, session, max_attempts=5):
             requests.exceptions.ChunkedEncodingError,
         ) as e:
             err = e
+            url = None  # force refresh next attempt
         except requests.HTTPError as e:
             if e.response.status_code not in (429, 500, 502, 503, 504):
                 raise
             err = e
+            url = None  # force refresh next attempt
         if attempt == max_attempts - 1:
             raise err
         wait = 2**attempt
@@ -208,6 +245,6 @@ with open("anyone.url", "r") as url_file:
 app = get_access_token()
 
 # download OneDrive data
-print(f"FOLDER: {os.path.dirname(dest_root)}", end=2 * os.linesep, flush=True)
+print(f"ROOT: {os.path.dirname(dest_root)}", end=2 * os.linesep, flush=True)
 download_folder(url_str, app, dest_root)
 print()
