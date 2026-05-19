@@ -4,6 +4,8 @@ import os
 import time
 import webbrowser
 
+from concurrent.futures import ThreadPoolExecutor
+
 import msal
 import pyperclip
 import requests
@@ -12,30 +14,48 @@ import requests
 client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
 scopes = ["https://graph.microsoft.com/Files.Read"]
 dest_root = os.path.abspath("./down")
+max_concurrent = 3  # max parallel downloads
 
 
-def _download_children(item_id, drive_id, app, session, dest_dir, dest_root):
+def _download_objects(
+    item_id, drive_id, app, session, dest_dir, dest_root, executor, futures
+):
     os.makedirs(dest_dir, exist_ok=True)
-    print(f"FOLDER: {os.path.relpath(dest_dir, dest_root)}")
+    print(f"FOLDER: {os.path.sep + os.path.relpath(dest_dir, dest_root)}")
     token = refresh_token(app)
-    for item in list_children(item_id, drive_id, token):
+    for item in list_objects(item_id, drive_id, token):
         dest_path = os.path.join(dest_dir, item["name"])
         if "folder" in item:
-            _download_children(item["id"], drive_id, app, session, dest_path, dest_root)
+            _download_objects(
+                item["id"],
+                drive_id,
+                app,
+                session,
+                dest_path,
+                dest_root,
+                executor,
+                futures,
+            )
         elif "file" in item:
-            download_file(item, drive_id, dest_path, dest_root, app, session)
+            futures.append(
+                executor.submit(
+                    download_file, item, drive_id, dest_path, dest_root, app, session
+                )
+            )
 
 
 def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     if is_complete(dest_path, expected_size, expected_mtime):
-        print(f"(SKIP): {os.path.relpath(dest_path, dest_root)}")
+        print(f"(SKIP): {os.path.sep + os.path.relpath(dest_path, dest_root)}")
         return
     # refresh token + downloadUrl per file (both expire ~1hr)
     token = refresh_token(app)
     fresh = get_item(item["id"], drive_id, token)
-    print(f"FILE: {os.path.relpath(dest_path, dest_root)}  ({expected_size:,} bytes)")
+    print(
+        f"FILE: {os.path.sep + os.path.relpath(dest_path, dest_root)}  ({expected_size:,} bytes)"
+    )
     stream_with_retry(
         fresh["@microsoft.graph.downloadUrl"], dest_path, expected_mtime, session
     )
@@ -46,8 +66,17 @@ def download_folder(sharing_url, app, dest_dir):
     root = get_root_item(sharing_url, token)
     drive_id = root["parentReference"]["driveId"]
     dest_root = os.path.dirname(dest_dir)
-    with requests.Session() as session:
-        _download_children(root["id"], drive_id, app, session, dest_dir, dest_root)
+    futures = []
+    with (
+        requests.Session() as session,
+        ThreadPoolExecutor(max_workers=max_concurrent) as executor,
+    ):
+        _download_objects(
+            root["id"], drive_id, app, session, dest_dir, dest_root, executor, futures
+        )
+    # surface exceptions from worker threads (with-block already waited for all)
+    for f in futures:
+        f.result()
 
 
 def encode_sharing_url(url):
@@ -111,7 +140,7 @@ def is_complete(dest_path, expected_size, expected_mtime):
     return abs(os.path.getmtime(dest_path) - expected_mtime) < 2  #  FAT32 limitation
 
 
-def list_children(item_id, drive_id, token):
+def list_objects(item_id, drive_id, token):
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children"
     params = {"$select": "id,name,file,folder,size,lastModifiedDateTime"}
     headers = {"Authorization": f"Bearer {token}"}
