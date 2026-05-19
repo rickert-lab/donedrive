@@ -14,7 +14,7 @@ import requests
 client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
 scopes = ["https://graph.microsoft.com/Files.Read"]
 dest_root = os.path.abspath("./down")
-max_concurrent = 3  # max parallel downloads
+max_concurrent = 10  # max parallel downloads
 
 
 def _download_objects(
@@ -71,6 +71,11 @@ def download_folder(sharing_url, app, dest_dir):
         requests.Session() as session,
         ThreadPoolExecutor(max_workers=max_concurrent) as executor,
     ):
+        # match pool size to worker count so threads don't serialize on the pool
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=max_concurrent, pool_maxsize=max_concurrent
+        )
+        session.mount("https://", adapter)
         _download_objects(
             root["id"],
             drive_id,
@@ -101,14 +106,14 @@ def encode_sharing_url(url):
 
 
 def byte_size(num_bytes):
-    for unit in ("B", "KB", "MB", "GB", "TB"):
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
         if num_bytes < 1024:
             return f"{num_bytes:.1f} {unit}"
         num_bytes /= 1024
-    return f"{num_bytes:.1f} PB"
+    return f"{num_bytes:.1f} PiB"
 
 
-def get_access_token():
+def get_client_app():
     app = msal.PublicClientApplication(
         client_id, authority="https://login.microsoftonline.com/common"
     )
@@ -213,7 +218,10 @@ def stream_with_retry(
                         f.write(chunk)
             if os.path.getsize(part_path) != expected_size:
                 actual_size = os.path.getsize(part_path)
-                os.remove(part_path)
+                try:
+                    os.remove(part_path)
+                except OSError:
+                    pass
                 raise IOError(
                     f"ERROR: File size is {byte_size(actual_size)}, but expected {byte_size(expected_size)}."
                 )
@@ -224,6 +232,7 @@ def stream_with_retry(
             requests.ConnectionError,
             requests.Timeout,
             requests.exceptions.ChunkedEncodingError,
+            IOError,
         ) as e:
             err = e
             url = None  # force refresh next attempt
@@ -235,14 +244,14 @@ def stream_with_retry(
         if attempt == max_attempts - 1:
             raise err
         wait = 2**attempt
-        print(f"retry  {dest_path} in {wait}s ({err})")
+        print(f"RETRY: {dest_path} in {wait}s ({err})")
         time.sleep(wait)
 
 
 # access OneDrive data
 with open("anyone.url", "r") as url_file:
     url_str = url_file.readline().strip()
-app = get_access_token()
+app = get_client_app()
 
 # download OneDrive data
 print(f"ROOT: {os.path.dirname(dest_root)}", end=2 * os.linesep, flush=True)
