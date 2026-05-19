@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import base64
 import datetime
 import os
@@ -14,8 +16,8 @@ import pyperclip
 import requests
 
 
-client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
-scopes = ["https://graph.microsoft.com/Files.Read"]
+client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive SyncEngine ID
+scopes = ["https://graph.microsoft.com/Files.Read"]  # Microsoft Graph API
 max_concurrent = 10  # max parallel downloads
 
 
@@ -51,12 +53,12 @@ def browse_folder(path_var, path_entry):
     if folder_path:
         path_var.set(folder_path)
         path_entry.xview_moveto(1.0)
-        print(f"ROOT: {os.path.dirname(folder_path)}", end=2 * os.linesep, flush=True)
+        print(f"ROOT: {folder_path}", end=2 * os.linesep, flush=True)
 
 
 def build_gui():
     root = tk.Tk()
-    root.title("dOneDrive - A minimalistic downloader for OneDrive shares")
+    root.title("dOneDrive")
 
     url_var = tk.StringVar(value="Paste your OneDrive share link before downloading.")
     path_var = tk.StringVar(value="Browse to your download destination folder.")
@@ -83,6 +85,22 @@ def build_gui():
     download_btn = tk.Button(root, text="Download", state="disabled")
     download_btn.config(command=lambda: start_download(url_var, path_var, download_btn))
     download_btn.pack(pady=10)
+
+    footer = tk.Frame(root)
+    footer.pack(fill="x", side="bottom", padx=10, pady=(0, 10))
+    link = tk.Label(
+        footer,
+        text="Version 0.1 by Christian Rickert. ↗",
+        fg="light blue",
+        font=("TkDefaultFont", 9),
+    )
+    link.pack(side="right")
+    link.bind(
+        "<Button-1>",  # left-click
+        lambda w: webbrowser.open("https://github.com/rickert-lab/dOneDrive"),
+    )
+    link.bind("<Enter>", lambda e: link.config(font=("TkDefaultFont", 9, "underline")))
+    link.bind("<Leave>", lambda e: link.config(font=("TkDefaultFont", 9)))
 
     update = lambda *_: update_download_state(url_var, path_var, download_btn)
     url_var.trace_add("write", update)
@@ -125,6 +143,7 @@ def download_folder(sharing_url, app, dest_dir):
     token = refresh_token(app)
     root = get_root_item(sharing_url, token)
     drive_id = root["parentReference"]["driveId"]
+    dest_dir = os.path.join(dest_dir, root["name"])
     futures = []
     with (
         requests.Session() as session,
@@ -157,7 +176,7 @@ def download_folder(sharing_url, app, dest_dir):
             print(f"ERROR: {e}")
         raise errors[0]
     else:
-        print("Download complete.")
+        print(f"{os.linesep}Download complete.")
 
 
 def encode_sharing_url(url):
@@ -261,7 +280,7 @@ def start_download(url_var, path_var, button):
     def worker():
         try:
             app = get_client_app()
-            print(f"ROOT: {os.path.dirname(dest)}", end=2 * os.linesep, flush=True)
+            print(f"ROOT: {dest}", end=2 * os.linesep, flush=True)
             download_folder(url, app, dest)
             print()
         finally:
@@ -275,6 +294,12 @@ def stream_with_retry(
     item, drive_id, dest_path, mtime, expected_size, app, session, max_attempts=5
 ):
     part_path = dest_path + ".part"
+    # discard any stale .part from a previous run - can't verify it matches this item
+    if os.path.exists(part_path):
+        try:
+            os.remove(part_path)
+        except OSError:
+            pass
     url = None
     for attempt in range(max_attempts):
         try:
@@ -336,4 +361,3 @@ def update_download_state(url_var, path_var, button):
 
 # start GUI
 build_gui()
-print()
