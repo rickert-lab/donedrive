@@ -9,14 +9,14 @@ import pyperclip
 import requests
 
 
-CLIENT_ID = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
-SCOPES = ["https://graph.microsoft.com/Files.Read"]
-dest_path = os.path.abspath("./down")
+client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
+scopes = ["https://graph.microsoft.com/Files.Read"]
+dest_root = os.path.abspath("./down")
 
 
 def _download_children(item_id, drive_id, app, session, dest_dir, dest_root):
     os.makedirs(dest_dir, exist_ok=True)
-    print(f"FOLDER: {dest_dir.replace(dest_root, '.')}")
+    print(f"FOLDER: {os.path.relpath(dest_dir, dest_root)}")
     token = refresh_token(app)
     for item in list_children(item_id, drive_id, token):
         dest_path = os.path.join(dest_dir, item["name"])
@@ -30,12 +30,12 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     if is_complete(dest_path, expected_size, expected_mtime):
-        print(f"(SKIP): {dest_path.replace(dest_root, '.')}")
+        print(f"(SKIP): {os.path.relpath(dest_path, dest_root)}")
         return
     # refresh token + downloadUrl per file (both expire ~1hr)
     token = refresh_token(app)
     fresh = get_item(item["id"], drive_id, token)
-    print(f"FILE: {dest_path.replace(dest_root, '.')}  ({expected_size:,} bytes)")
+    print(f"FILE: {os.path.relpath(dest_path, dest_root)}  ({expected_size:,} bytes)")
     stream_with_retry(
         fresh["@microsoft.graph.downloadUrl"], dest_path, expected_mtime, session
     )
@@ -58,21 +58,21 @@ def encode_sharing_url(url):
 
 def get_access_token():
     app = msal.PublicClientApplication(
-        CLIENT_ID, authority="https://login.microsoftonline.com/common"
+        client_id, authority="https://login.microsoftonline.com/common"
     )
     # try silent refresh first
     accounts = app.get_accounts()
     if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        result = app.acquire_token_silent(scopes, account=accounts[0])
         if result and "access_token" in result:
             return app
     # fall back to device code flow
-    flow = app.initiate_device_flow(scopes=SCOPES)
+    flow = app.initiate_device_flow(scopes=scopes)
     webbrowser.open("https://microsoft.com/devicelogin")
     print(f'"{flow["message"]}" - Microsoft', end=2 * os.linesep)
     pyperclip.copy(flow["user_code"])
     print(
-        f"# Access code copied to clipboad. Choose account and confirm download!",
+        f"Access code '{flow['user_code']}' copied to clipboard. Pick a Microsoft account and sign in to OneDrive SyncEngine to begin download!",
         end=2 * os.linesep,
     )
     result = app.acquire_token_by_device_flow(flow)
@@ -108,7 +108,7 @@ def is_complete(dest_path, expected_size, expected_mtime):
         return False
     if os.path.getsize(dest_path) != expected_size:
         return False
-    return abs(os.path.getmtime(dest_path) - expected_mtime) == 0
+    return abs(os.path.getmtime(dest_path) - expected_mtime) < 2  #  FAT32 limitation
 
 
 def list_children(item_id, drive_id, token):
@@ -132,7 +132,7 @@ def parse_mtime(iso_str):
 def refresh_token(app):
     # msal returns cached token if still valid, refreshes otherwise
     accounts = app.get_accounts()
-    result = app.acquire_token_silent(SCOPES, account=accounts[0])
+    result = app.acquire_token_silent(scopes, account=accounts[0])
     if not result or "access_token" not in result:
         raise RuntimeError("token refresh failed - re-authenticate")
     return result["access_token"]
@@ -146,6 +146,9 @@ def stream_with_retry(url, dest_path, mtime, session, max_attempts=5):
             headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
             with session.get(url, headers=headers, stream=True, timeout=60) as r:
                 r.raise_for_status()
+                # server may ignore Range and return 200 with full content
+                if resume_from and r.status_code != 206:
+                    resume_from = 0
                 mode = "ab" if resume_from else "wb"
                 with open(part_path, mode) as f:
                     for chunk in r.iter_content(chunk_size=4_194_304):  # 4 MiB
@@ -176,6 +179,6 @@ with open("anyone.url", "r") as url_file:
 app = get_access_token()
 
 # download OneDrive data
-print(f"@ {os.path.dirname(dest_path)}", end=2 * os.linesep)
-download_folder(url_str, app, dest_path)
+print(f"FOLDER: {os.path.dirname(dest_root)}", end=2 * os.linesep, flush=True)
+download_folder(url_str, app, dest_root)
 print()
