@@ -16,7 +16,6 @@ import requests
 
 client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive sync client
 scopes = ["https://graph.microsoft.com/Files.Read"]
-dest_root = os.path.abspath("./down")
 max_concurrent = 10  # max parallel downloads
 
 
@@ -48,17 +47,18 @@ def _download_objects(
 
 
 def browse_folder(path_var, path_entry):
-    folder = filedialog.askdirectory()
-    if folder:
-        path_var.set(folder)
+    folder_path = filedialog.askdirectory()
+    if folder_path:
+        path_var.set(folder_path)
         path_entry.xview_moveto(1.0)
+        print(f"ROOT: {os.path.dirname(folder_path)}", end=2 * os.linesep, flush=True)
 
 
 def build_gui():
     root = tk.Tk()
     root.title("dOneDrive - A minimalistic downloader for OneDrive shares")
 
-    url_var = tk.StringVar(value="Paste your OneDrive share link here.")
+    url_var = tk.StringVar(value="Paste your OneDrive share link before downloading.")
     path_var = tk.StringVar(value="Browse to your download destination folder.")
 
     url_frame = tk.Frame(root)
@@ -66,7 +66,7 @@ def build_gui():
     tk.Button(url_frame, text="Paste", command=lambda: paste_url(url_var)).pack(
         side="left"
     )
-    tk.Entry(url_frame, textvariable=url_var, width=60).pack(
+    tk.Entry(url_frame, textvariable=url_var, state="readonly", width=60).pack(
         side="left", fill="x", expand=True, padx=(5, 0)
     )
 
@@ -80,9 +80,13 @@ def build_gui():
         path_frame, text="Browse", command=lambda: browse_folder(path_var, path_entry)
     ).pack(side="left", padx=(5, 0))
 
-    download_btn = tk.Button(root, text="Download")
+    download_btn = tk.Button(root, text="Download", state="disabled")
     download_btn.config(command=lambda: start_download(url_var, path_var, download_btn))
     download_btn.pack(pady=10)
+
+    update = lambda *_: update_download_state(url_var, path_var, download_btn)
+    url_var.trace_add("write", update)
+    path_var.trace_add("write", update)
 
     root.update_idletasks()  # force geometry calculation before querying size
     root.minsize(root.winfo_width(), root.winfo_height())
@@ -152,6 +156,8 @@ def download_folder(sharing_url, app, dest_dir):
         for e in errors:
             print(f"ERROR: {e}")
         raise errors[0]
+    else:
+        print("Download complete.")
 
 
 def encode_sharing_url(url):
@@ -319,11 +325,15 @@ def stream_with_retry(
         time.sleep(wait)
 
 
-# access OneDrive data
-with open("anyone.url", "r") as url_file:
-    url_str = url_file.readline().strip()
+def update_download_state(url_var, path_var, button):
+    url = url_var.get().strip().lower()
+    dest = path_var.get().strip()
+    valid_domains = ("1drv.ms", "onedrive.live.com", "sharepoint.com", "onedrive.com")
+    url_ok = url.startswith("https://") and any(d in url for d in valid_domains)
+    valid = url_ok and os.path.isdir(dest)
+    button.config(state="normal" if valid else "disabled")
 
-# download OneDrive data
-print(f"ROOT: {os.path.dirname(dest_root)}", end=2 * os.linesep, flush=True)
+
+# start GUI
 build_gui()
 print()
