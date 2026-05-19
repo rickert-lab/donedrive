@@ -124,7 +124,7 @@ def get_access_token():
     print(f'"{flow["message"]}" - Microsoft', end=2 * os.linesep)
     pyperclip.copy(flow["user_code"])
     print(
-        f"Access code '{flow['user_code']}' copied to clipboard. Pick a Microsoft account and sign in to OneDrive SyncEngine to begin download!",
+        f"Access code '{flow['user_code']}' copied to the clipboard. Pick a Microsoft account and sign in to OneDrive SyncEngine to begin the download!",
         end=2 * os.linesep,
     )
     result = app.acquire_token_by_device_flow(flow)
