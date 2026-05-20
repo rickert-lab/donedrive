@@ -25,7 +25,7 @@ def _download_objects(
     item_id, drive_id, app, session, dest_dir, dest_root, executor, futures
 ):
     os.makedirs(dest_dir, exist_ok=True)
-    print(f"DIR:  {os.path.sep + os.path.relpath(dest_dir, dest_root)}")
+    print(f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)}")
     token = refresh_token(app)
     for item in list_objects(item_id, drive_id, token):
         dest_path = os.path.join(dest_dir, item["name"])
@@ -63,7 +63,7 @@ def build_gui():
         value=18 * " " + "Copy & paste your OneDrive share link to download."
     )
     path_var = tk.StringVar(
-        value="Browse to your download destination folder." + 26 * " "
+        value="Browse to your download destination folder." + 27 * " "
     )
 
     url_frame = tk.Frame(root)
@@ -129,12 +129,12 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     if is_complete(dest_path, expected_size, expected_mtime):
         print(
-            f"FILE: {os.path.sep + os.path.relpath(dest_path, dest_root)} [skip]",
+            f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [skip]",
             flush=True,
         )
         return
     print(
-        f"FILE: {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}]",
+        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}]",
         flush=True,
     )
     stream_with_retry(
@@ -180,7 +180,10 @@ def download_folder(sharing_url, app, dest_dir):
         raise errors[0]
     else:
         dirs, files, total = summarize_download(dest_dir)
-        print(f"{os.linesep}{dirs} dirs, {files} files, {byte_size(total)}")
+        print(f"{os.linesep}{80 * '='}")
+        print(f"DIRS:  {dirs}")
+        print(f"FILES: {files} [{byte_size(total)}]")
+        print(f"{80 * '='}")
         print(f"Download complete.{os.linesep}")
 
 
@@ -203,10 +206,12 @@ def get_client_app():
     # fall back to device code flow
     flow = app.initiate_device_flow(scopes=scopes)
     webbrowser.open("https://microsoft.com/devicelogin")
-    print(f'"{flow["message"]}" - Microsoft', end=2 * os.linesep)
+    print(f'{os.linesep}"{flow["message"]}" - Microsoft', end=2 * os.linesep)
     pyperclip.copy(flow["user_code"])
     print(
-        f"Access code '{flow['user_code']}' copied to the clipboard. Pick a Microsoft account and sign in to OneDrive SyncEngine to begin the download!",
+        f"Access code '{flow['user_code']}' copied to the clipboard. Paste the "
+        "code into the device authenticator. Then pick your Microsoft account "
+        "and sign in to the OneDrive SyncEngine to begin your download!",
         end=2 * os.linesep,
     )
     result = app.acquire_token_by_device_flow(flow)
@@ -285,7 +290,7 @@ def start_download(url_var, path_var, button):
     def worker():
         try:
             app = get_client_app()
-            print(f"ROOT: {dest}", end=2 * os.linesep, flush=True)
+            print(f"ROOT:   {dest}", end=2 * os.linesep, flush=True)
             download_folder(url, app, dest)
             print()
         finally:
@@ -360,8 +365,9 @@ def summarize_download(dest_dir):
     for root, _dnames, fnames in os.walk(dest_dir):
         dirs += 1
         for fname in fnames:
-            files += 1
-            total += os.path.getsize(os.path.join(root, fname))
+            if not fname.endswith(".part"):
+                files += 1
+                total += os.path.getsize(os.path.join(root, fname))
     return dirs, files, total
 
 
