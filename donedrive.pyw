@@ -32,6 +32,8 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog
 
+import numpy as np
+
 import msal
 import pyperclip
 import requests
@@ -66,32 +68,37 @@ class QuickXorHash:
         if cbSize is None:
             cbSize = len(array) - ibStart
 
+        # Vectorized strided XOR-reduction: reduced[i] = XOR of bytes at i, i+160, i+320, ...
+        buf = np.frombuffer(array, dtype=np.uint8, count=cbSize, offset=ibStart)
+        n_full = cbSize // self.WidthInBits
+        remainder = cbSize % self.WidthInBits
+        reduced = np.zeros(self.WidthInBits, dtype=np.uint64)
+        if n_full:
+            reduced[:] = np.bitwise_xor.reduce(
+                buf[: n_full * self.WidthInBits].reshape(n_full, self.WidthInBits),
+                axis=0,
+            ).astype(np.uint64)
+        if remainder:
+            reduced[:remainder] ^= buf[n_full * self.WidthInBits :].astype(np.uint64)
+
         currentShift = self._shiftSoFar
-
-        # The bitvector where we'll start xoring
         vectorArrayIndex = currentShift // 64
-
-        # The position within the bit vector at which we begin xoring
         vectorOffset = currentShift % 64
         iterations = min(cbSize, self.WidthInBits)
 
         for i in range(iterations):
             isLastCell = vectorArrayIndex == len(self._data) - 1
             bitsInVectorCell = self.BitsInLastCell if isLastCell else 64
+            xoredByte = int(reduced[i])
 
-            # There's at least 2 bitvectors before we reach the end of the array
             if vectorOffset <= bitsInVectorCell - 8:
-                for j in range(ibStart + i, cbSize + ibStart, self.WidthInBits):
-                    self._data[vectorArrayIndex] ^= array[j] << vectorOffset
-                self._data[vectorArrayIndex] &= self._MASK64
+                self._data[vectorArrayIndex] = (
+                    self._data[vectorArrayIndex] ^ (xoredByte << vectorOffset)
+                ) & self._MASK64
             else:
                 index1 = vectorArrayIndex
                 index2 = 0 if isLastCell else (vectorArrayIndex + 1)
                 low = bitsInVectorCell - vectorOffset
-
-                xoredByte = 0
-                for j in range(ibStart + i, cbSize + ibStart, self.WidthInBits):
-                    xoredByte ^= array[j]
                 self._data[index1] = (
                     self._data[index1] ^ (xoredByte << vectorOffset)
                 ) & self._MASK64
@@ -102,7 +109,6 @@ class QuickXorHash:
                 vectorArrayIndex = 0 if isLastCell else vectorArrayIndex + 1
                 vectorOffset -= bitsInVectorCell
 
-        # Update the starting position in a circular shift pattern
         self._shiftSoFar = (
             self._shiftSoFar + self.Shift * (cbSize % self.WidthInBits)
         ) % self.WidthInBits
