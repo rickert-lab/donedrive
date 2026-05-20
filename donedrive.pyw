@@ -68,23 +68,19 @@ def _download_objects(
             )
 
 
-def browse_folder(path_var, path_entry):
+def browse_folder(dir_var, dir_entry):
     folder_path = filedialog.askdirectory()
     if folder_path:
-        path_var.set(folder_path)
-        path_entry.xview_moveto(1.0)
+        dir_var.set(folder_path)
+        dir_entry.xview_moveto(1.0)
 
 
 def build_gui():
     root = tk.Tk()
     root.title("donedrive")
 
-    url_var = tk.StringVar(
-        value="Copy & paste your OneDrive share link to download." + 26 * " "
-    )
-    path_var = tk.StringVar(
-        value=20 * " " + "Browse to your download destination folder."
-    )
+    url_var = tk.StringVar(value="[Paste the OneDrive share link for your download]")
+    dir_var = tk.StringVar(value="[Select the destination directory for your download]")
 
     url_frame = tk.Frame(root)
     url_frame.pack(fill="x", padx=10, pady=(10, 5))
@@ -92,22 +88,22 @@ def build_gui():
         side="left"
     )
     url_entry = tk.Entry(
-        url_frame, textvariable=url_var, state="readonly", justify="center", width=60
+        url_frame, textvariable=url_var, state="readonly", justify="left", width=60
     )
     url_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
-    path_frame = tk.Frame(root)
-    path_frame.pack(fill="x", padx=10, pady=5)
-    path_entry = tk.Entry(
-        path_frame, textvariable=path_var, state="readonly", justify="center"
+    dir_frame = tk.Frame(root)
+    dir_frame.pack(fill="x", padx=10, pady=5)
+    dir_entry = tk.Entry(
+        dir_frame, textvariable=dir_var, state="readonly", justify="right"
     )
-    path_entry.pack(side="left", fill="x", expand=True)
+    dir_entry.pack(side="left", fill="x", expand=True)
     tk.Button(
-        path_frame, text="Browse", command=lambda: browse_folder(path_var, path_entry)
+        dir_frame, text="Browse", command=lambda: browse_folder(dir_var, dir_entry)
     ).pack(side="left", padx=(5, 0))
 
     download_btn = tk.Button(root, text="Download", state="disabled")
-    download_btn.config(command=lambda: start_download(url_var, path_var, download_btn))
+    download_btn.config(command=lambda: start_download(url_var, dir_var, download_btn))
     download_btn.pack(pady=10)
 
     footer = tk.Frame(root)
@@ -121,14 +117,14 @@ def build_gui():
     link.pack(side="right")
     link.bind(
         "<Button-1>",  # left-click
-        lambda b: webbrowser.open("https://github.com/rickert-lab/donedrive"),
+        lambda _b: webbrowser.open("https://github.com/rickert-lab/donedrive"),
     )
-    link.bind("<Enter>", lambda c: link.config(font=("TkDefaultFont", 9, "underline")))
-    link.bind("<Leave>", lambda c: link.config(font=("TkDefaultFont", 9)))
+    link.bind("<Enter>", lambda _c: link.config(font=("TkDefaultFont", 9, "underline")))
+    link.bind("<Leave>", lambda _c: link.config(font=("TkDefaultFont", 9)))
 
-    update = lambda *_: update_download_state(url_var, path_var, download_btn)
+    update = lambda *_: update_download_state(url_var, dir_var, download_btn)
     url_var.trace_add("write", update)
-    path_var.trace_add("write", update)
+    dir_var.trace_add("write", update)
 
     root.update_idletasks()  # force geometry calculation before querying size
     root.minsize(root.winfo_width(), root.winfo_height())
@@ -312,9 +308,9 @@ def refresh_token(app):
     return result["access_token"]
 
 
-def start_download(url_var, path_var, button):
+def start_download(url_var, dir_var, button):
     url = url_var.get().strip()
-    dest = path_var.get().strip()
+    dest = dir_var.get().strip()
     if not url or not dest:
         return
     button.config(state="disabled")
@@ -409,9 +405,9 @@ def summarize_download(dest_dir):
     return dirs, files, total
 
 
-def update_download_state(url_var, path_var, button):
+def update_download_state(url_var, dir_var, button):
     url = url_var.get().strip().lower()
-    dest = path_var.get().strip()
+    dest = dir_var.get().strip()
     valid_domains = ("1drv.ms", "onedrive.live.com", "sharepoint.com", "onedrive.com")
     url_ok = url.startswith("https://") and any(d in url for d in valid_domains)
     dir_ok = os.path.isdir(dest) and os.access(dest, os.W_OK)
