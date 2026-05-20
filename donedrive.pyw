@@ -1,5 +1,25 @@
 #!/usr/bin/env python3
 
+"""
+donedrive - The download assistant for Microsoft OneDrive.
+Copyright (C) 2026 The Regents of the University of Colorado
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+Author:     Christian Rickert <christian.rickert@cuanschutz.edu>
+Date:       2026-05-19
+Version:    0.1
+"""
+
 import base64
 import datetime
 import os
@@ -183,7 +203,7 @@ def download_folder(sharing_url, app, dest_dir):
         print(f"{os.linesep}{80 * '='}")
         print(f"DIRS:  {dirs}")
         print(f"FILES: {files} [{byte_size(total)}]")
-        print(f"{80 * '='}")
+        print(f"{80 * '='}{os.linesep}")
         print(f"Download complete.{os.linesep}")
 
 
@@ -250,6 +270,17 @@ def is_complete(dest_path, expected_size, expected_mtime):
     return abs(os.path.getmtime(dest_path) - expected_mtime) < 2  #  FAT32 limitation
 
 
+def is_hidden(path):
+    if os.path.basename(path).startswith("."):  # LINUX, macOS
+        return True
+    if os.name == "nt":  # Windows
+        try:
+            return bool(os.stat(path).st_file_attributes & stat.FILE_ATTRIBUTE_HIDDEN)
+        except OSError:
+            return False
+    return False
+
+
 def list_objects(item_id, drive_id, token):
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children"
     params = {"$select": "id,name,file,folder,size,lastModifiedDateTime"}
@@ -290,7 +321,7 @@ def start_download(url_var, path_var, button):
     def worker():
         try:
             app = get_client_app()
-            print(f"ROOT:   {dest}", end=2 * os.linesep, flush=True)
+            print(f"ROOT:  {dest}", end=2 * os.linesep, flush=True)
             download_folder(url, app, dest)
             print()
         finally:
@@ -362,12 +393,18 @@ def stream_with_retry(
 
 def summarize_download(dest_dir):
     dirs = files = total = 0
-    for root, _dnames, fnames in os.walk(dest_dir):
+    for root, dnames, fnames in os.walk(dest_dir):
+        # prune hidden dirs in place so os.walk doesn't descend into them
+        dnames[:] = [d for d in dnames if not is_hidden(os.path.join(root, d))]
         dirs += 1
         for fname in fnames:
-            if not fname.endswith(".part"):
-                files += 1
-                total += os.path.getsize(os.path.join(root, fname))
+            if fname.endswith(".part"):  # temp file
+                continue
+            fpath = os.path.join(root, fname)
+            if is_hidden(fpath):
+                continue
+            files += 1
+            total += os.path.getsize(fpath)
     return dirs, files, total
 
 
