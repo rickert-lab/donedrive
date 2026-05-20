@@ -246,12 +246,12 @@ def build_gui():
     author.pack(side="right")
     author.bind(
         "<Button-1>",  # left-click
-        lambda _b: webbrowser.open("https://github.com/rickert-lab/donedrive"),
+        lambda _e: webbrowser.open("https://github.com/rickert-lab/donedrive"),
     )
     author.bind(
-        "<Enter>", lambda _c: author.config(font=("TkDefaultFont", 10, "underline"))
+        "<Enter>", lambda _e: author.config(font=("TkDefaultFont", 10, "underline"))
     )
-    author.bind("<Leave>", lambda _c: author.config(font=("TkDefaultFont", 10)))
+    author.bind("<Leave>", lambda _e: author.config(font=("TkDefaultFont", 10)))
 
     # keep track of download status
     update = lambda *_: update_download_state(url_var, dir_var, download_btn)
@@ -473,7 +473,10 @@ def start_download(url_var, dir_var, button):
         try:
             app = get_client_app()
             print(f"ROOT:  {dest}", end=2 * os.linesep, flush=True)
+            start = time.time()
             download_folder(url, app, dest)
+            end = time.time()
+            print(f"Duration: {end - start}s", flush=True)
             print()
         finally:
             # marshal Tk call back to the main thread
