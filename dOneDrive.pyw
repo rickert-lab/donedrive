@@ -53,15 +53,18 @@ def browse_folder(path_var, path_entry):
     if folder_path:
         path_var.set(folder_path)
         path_entry.xview_moveto(1.0)
-        print(f"ROOT: {folder_path}", end=2 * os.linesep, flush=True)
 
 
 def build_gui():
     root = tk.Tk()
-    root.title("dOneDrive")
+    root.title("donedrive")
 
-    url_var = tk.StringVar(value="Paste your OneDrive share link before downloading.")
-    path_var = tk.StringVar(value="Browse to your download destination folder.")
+    url_var = tk.StringVar(
+        value=18 * " " + "Copy & paste your OneDrive share link to download."
+    )
+    path_var = tk.StringVar(
+        value="Browse to your download destination folder." + 26 * " "
+    )
 
     url_frame = tk.Frame(root)
     url_frame.pack(fill="x", padx=10, pady=(10, 5))
@@ -97,10 +100,10 @@ def build_gui():
     link.pack(side="right")
     link.bind(
         "<Button-1>",  # left-click
-        lambda w: webbrowser.open("https://github.com/rickert-lab/dOneDrive"),
+        lambda b: webbrowser.open("https://github.com/rickert-lab/donedrive"),
     )
-    link.bind("<Enter>", lambda e: link.config(font=("TkDefaultFont", 9, "underline")))
-    link.bind("<Leave>", lambda e: link.config(font=("TkDefaultFont", 9)))
+    link.bind("<Enter>", lambda c: link.config(font=("TkDefaultFont", 9, "underline")))
+    link.bind("<Leave>", lambda c: link.config(font=("TkDefaultFont", 9)))
 
     update = lambda *_: update_download_state(url_var, path_var, download_btn)
     url_var.trace_add("write", update)
@@ -176,7 +179,9 @@ def download_folder(sharing_url, app, dest_dir):
             print(f"ERROR: {e}")
         raise errors[0]
     else:
-        print(f"{os.linesep}Download complete.")
+        dirs, files, total = summarize_download(dest_dir)
+        print(f"{os.linesep}{dirs} dirs, {files} files, {byte_size(total)}")
+        print(f"Download complete.{os.linesep}")
 
 
 def encode_sharing_url(url):
@@ -348,6 +353,16 @@ def stream_with_retry(
         wait = 2**attempt
         print(f"RETRY: {dest_path} in {wait}s ({err})")
         time.sleep(wait)
+
+
+def summarize_download(dest_dir):
+    dirs = files = total = 0
+    for root, _dnames, fnames in os.walk(dest_dir):
+        dirs += 1
+        for fname in fnames:
+            files += 1
+            total += os.path.getsize(os.path.join(root, fname))
+    return dirs, files, total
 
 
 def update_download_state(url_var, path_var, button):
