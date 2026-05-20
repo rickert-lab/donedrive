@@ -23,6 +23,7 @@ Version:    0.1
 import base64
 import datetime
 import os
+import stat
 import threading
 import time
 import tkinter as tk
@@ -44,12 +45,19 @@ max_concurrent = 10  # max parallel downloads
 def _download_objects(
     item_id, drive_id, app, session, dest_dir, dest_root, executor, futures
 ):
-    os.makedirs(dest_dir, exist_ok=True)
-    print(f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)}")
+    if os.path.isdir(dest_dir):
+        print(
+            f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ⭥", flush=True
+        )
+    else:
+        os.makedirs(dest_dir, exist_ok=True)
+        print(
+            f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ⭣", flush=True
+        )
     token = refresh_token(app)
     for item in list_objects(item_id, drive_id, token):
         dest_path = os.path.join(dest_dir, item["name"])
-        if "folder" in item:
+        if "folder" in item:  # recurse
             _download_objects(
                 item["id"],
                 drive_id,
@@ -60,7 +68,7 @@ def _download_objects(
                 executor,
                 futures,
             )
-        elif "file" in item:
+        elif "file" in item:  # download
             futures.append(
                 executor.submit(
                     download_file, item, drive_id, dest_path, dest_root, app, session
@@ -135,7 +143,7 @@ def build_gui():
 
 def byte_size(num_bytes):
     for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if num_bytes < 1024:
+        if round(num_bytes, 1) < 1024:
             return f"{num_bytes:.1f} {unit}"
         num_bytes /= 1024
     return f"{num_bytes:.1f} PiB"
@@ -146,12 +154,12 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     if is_complete(dest_path, expected_size, expected_mtime):
         print(
-            f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [skip]",
+            f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}] ⭥",
             flush=True,
         )
         return
     print(
-        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}]",
+        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}] ⭣",
         flush=True,
     )
     stream_with_retry(
