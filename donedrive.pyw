@@ -68,34 +68,48 @@ class QuickXorHash:
         if cbSize is None:
             cbSize = len(array) - ibStart
 
-        # Vectorized strided XOR-reduction: reduced[i] = XOR of bytes at i, i+160, i+320, ...
+        # vectorized strided XOR-reduction: reduced[i] = XOR of bytes at i, i+160, i+320, ...
+        # lay the chunk out as a 2D grid 160 columns wide, then XOR-reduce each column.
         buf = np.frombuffer(array, dtype=np.uint8, count=cbSize, offset=ibStart)
-        n_full = cbSize // self.WidthInBits
-        remainder = cbSize % self.WidthInBits
+        n_full = cbSize // self.WidthInBits  # number of complete 160-byte rows
+        remainder = (
+            cbSize % self.WidthInBits
+        )  # trailing bytes that don't form a full row
         reduced = np.zeros(self.WidthInBits, dtype=np.uint64)
         if n_full:
+            # reshape into (n_full, 160) and collapse rows -> one byte per column
             reduced[:] = np.bitwise_xor.reduce(
                 buf[: n_full * self.WidthInBits].reshape(n_full, self.WidthInBits),
                 axis=0,
             ).astype(np.uint64)
         if remainder:
+            # fold the leftover bytes into the matching columns of the reduction
             reduced[:remainder] ^= buf[n_full * self.WidthInBits :].astype(np.uint64)
 
+        # from here on it's the original per-column placement into the 160-bit state,
+        # but driven by the precomputed `reduced` array instead of an inner byte loop.
         currentShift = self._shiftSoFar
+
+        # the bitvector where we'll start xoring
         vectorArrayIndex = currentShift // 64
+
+        # the position within the bit vector at which we begin xoring
         vectorOffset = currentShift % 64
         iterations = min(cbSize, self.WidthInBits)
 
         for i in range(iterations):
             isLastCell = vectorArrayIndex == len(self._data) - 1
             bitsInVectorCell = self.BitsInLastCell if isLastCell else 64
-            xoredByte = int(reduced[i])
+            xoredByte = int(reduced[i])  # precomputed column XOR
 
+            # there's at least 2 bitvectors before we reach the end of the array
             if vectorOffset <= bitsInVectorCell - 8:
+                # whole byte fits inside the current 64-bit cell
                 self._data[vectorArrayIndex] = (
                     self._data[vectorArrayIndex] ^ (xoredByte << vectorOffset)
                 ) & self._MASK64
             else:
+                # byte straddles the cell boundary - split across two cells, wrapping at the end
                 index1 = vectorArrayIndex
                 index2 = 0 if isLastCell else (vectorArrayIndex + 1)
                 low = bitsInVectorCell - vectorOffset
@@ -109,6 +123,7 @@ class QuickXorHash:
                 vectorArrayIndex = 0 if isLastCell else vectorArrayIndex + 1
                 vectorOffset -= bitsInVectorCell
 
+        # update the starting position in a circular shift pattern
         self._shiftSoFar = (
             self._shiftSoFar + self.Shift * (cbSize % self.WidthInBits)
         ) % self.WidthInBits
@@ -116,10 +131,10 @@ class QuickXorHash:
         self._lengthSoFar += cbSize
 
     def digest(self):
-        # Create a byte array big enough to hold all our data
+        # create a byte array big enough to hold all our data
         rgb = bytearray((self.WidthInBits - 1) // 8 + 1)
 
-        # Block copy all our bitvectors to this byte array
+        # block copy all our bitvectors to this byte array
         for i in range(len(self._data) - 1):
             rgb[i * 8 : i * 8 + 8] = self._data[i].to_bytes(8, "little")
 
@@ -130,7 +145,7 @@ class QuickXorHash:
         ]
 
         # XOR the file length with the least significant bits
-        # Expected value is 8-bytes in length in little-endian format
+        # expected value is 8-bytes in length in little-endian format
         lengthBytes = (self._lengthSoFar & self._MASK64).to_bytes(8, "little")
         for i in range(len(lengthBytes)):
             rgb[(self.WidthInBits // 8) - len(lengthBytes) + i] ^= lengthBytes[i]
