@@ -1,4 +1,6 @@
-# python>=3.13
+# python>=3.14
 msal
 pyperclip
 requests
+# pyInstaller
+# pyInstaller --clean --onefile --optimize 2 --strip donedrive.pyw
