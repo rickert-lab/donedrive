@@ -87,28 +87,40 @@ def build_gui():
     root = tk.Tk()
     root.title("donedrive")
 
+    # OneDrive share link
     url_var = tk.StringVar(value="[Paste the OneDrive share link for your download]")
     dir_var = tk.StringVar(value="[Select the destination directory for your download]")
 
     url_frame = tk.Frame(root)
     url_frame.pack(fill="x", padx=10, pady=(10, 5))
     tk.Button(url_frame, text="Paste", command=lambda: paste_url(url_var)).pack(
-        side="left"
+        side="left", padx=(5, 0), pady=(0, 5)
     )
     url_entry = tk.Entry(
-        url_frame, textvariable=url_var, state="readonly", justify="left", width=60
+        url_frame,
+        textvariable=url_var,
+        state="readonly",
+        justify="left",
+        width=60,
+        readonlybackground="gray30",
     )
     url_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
+    # download destination
     dir_frame = tk.Frame(root)
     dir_frame.pack(fill="x", padx=10, pady=5)
     dir_entry = tk.Entry(
-        dir_frame, textvariable=dir_var, state="readonly", justify="right"
+        dir_frame,
+        textvariable=dir_var,
+        state="readonly",
+        justify="right",
+        width=60,
+        readonlybackground="gray30",
     )
     dir_entry.pack(side="left", fill="x", expand=True)
     tk.Button(
         dir_frame, text="Browse", command=lambda: browse_folder(dir_var, dir_entry)
-    ).pack(side="left", padx=(5, 0))
+    ).pack(side="left", padx=(5, 0), pady=(0, 5))
 
     download_btn = tk.Button(root, text="Download", state="disabled")
     download_btn.config(command=lambda: start_download(url_var, dir_var, download_btn))
@@ -116,28 +128,52 @@ def build_gui():
 
     footer = tk.Frame(root)
     footer.pack(fill="x", side="bottom", padx=10, pady=(0, 10))
-    link = tk.Label(
+    # OneDrive status
+    status = tk.Label(
+        footer,
+        text="Microsoft OneDrive Status. ↗",
+        fg="dark gray",
+        font=("TkDefaultFont", 10),
+    )
+    status.pack(side="left")
+    status.bind(
+        "<Button-1>",  # left-click
+        lambda _b: webbrowser.open(
+            "https://www.aguidetocloud.com/service-health/?service=Microsoft+OneDrive&status=active"
+        ),
+    )
+    status.bind(
+        "<Enter>", lambda _c: status.config(font=("TkDefaultFont", 10, "underline"))
+    )
+    status.bind("<Leave>", lambda _c: status.config(font=("TkDefaultFont", 10)))
+    # author
+    author = tk.Label(
         footer,
         text="Version 0.1 by Christian Rickert. ↗",
-        fg="light blue",
-        font=("TkDefaultFont", 9),
+        fg="dodger blue",
+        font=("TkDefaultFont", 10),
     )
-    link.pack(side="right")
-    link.bind(
+    author.pack(side="right")
+    author.bind(
         "<Button-1>",  # left-click
         lambda _b: webbrowser.open("https://github.com/rickert-lab/donedrive"),
     )
-    link.bind("<Enter>", lambda _c: link.config(font=("TkDefaultFont", 9, "underline")))
-    link.bind("<Leave>", lambda _c: link.config(font=("TkDefaultFont", 9)))
+    author.bind(
+        "<Enter>", lambda _c: author.config(font=("TkDefaultFont", 10, "underline"))
+    )
+    author.bind("<Leave>", lambda _c: author.config(font=("TkDefaultFont", 10)))
 
+    # keep track of download status
     update = lambda *_: update_download_state(url_var, dir_var, download_btn)
     url_var.trace_add("write", update)
     dir_var.trace_add("write", update)
 
+    # limit resizing to width
     root.update_idletasks()  # force geometry calculation before querying size
     root.minsize(root.winfo_width(), root.winfo_height())
     root.resizable(True, False)
 
+    # run GUI
     root.mainloop()
 
 
