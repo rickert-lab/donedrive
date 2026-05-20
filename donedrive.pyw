@@ -80,10 +80,10 @@ def build_gui():
     root.title("donedrive")
 
     url_var = tk.StringVar(
-        value=18 * " " + "Copy & paste your OneDrive share link to download."
+        value="Copy & paste your OneDrive share link to download." + 26 * " "
     )
     path_var = tk.StringVar(
-        value="Browse to your download destination folder." + 27 * " "
+        value=20 * " " + "Browse to your download destination folder."
     )
 
     url_frame = tk.Frame(root)
@@ -91,14 +91,15 @@ def build_gui():
     tk.Button(url_frame, text="Paste", command=lambda: paste_url(url_var)).pack(
         side="left"
     )
-    tk.Entry(url_frame, textvariable=url_var, state="readonly", width=60).pack(
-        side="left", fill="x", expand=True, padx=(5, 0)
+    url_entry = tk.Entry(
+        url_frame, textvariable=url_var, state="readonly", justify="center", width=60
     )
+    url_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
 
     path_frame = tk.Frame(root)
     path_frame.pack(fill="x", padx=10, pady=5)
     path_entry = tk.Entry(
-        path_frame, textvariable=path_var, state="readonly", justify="right"
+        path_frame, textvariable=path_var, state="readonly", justify="center"
     )
     path_entry.pack(side="left", fill="x", expand=True)
     tk.Button(
@@ -413,8 +414,8 @@ def update_download_state(url_var, path_var, button):
     dest = path_var.get().strip()
     valid_domains = ("1drv.ms", "onedrive.live.com", "sharepoint.com", "onedrive.com")
     url_ok = url.startswith("https://") and any(d in url for d in valid_domains)
-    valid = url_ok and os.path.isdir(dest)
-    button.config(state="normal" if valid else "disabled")
+    dir_ok = os.path.isdir(dest) and os.access(dest, os.W_OK)
+    button.config(state="normal" if (url_ok and dir_ok) else "disabled")
 
 
 # start GUI
