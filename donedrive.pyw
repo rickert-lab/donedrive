@@ -42,6 +42,96 @@ scopes = ["https://graph.microsoft.com/Files.Read"]  # Microsoft Graph API
 max_concurrent = 10  # max parallel downloads
 
 
+class QuickXorHash:
+    """
+    See: https://learn.microsoft.com/en-us/onedrive/developer/code-snippets/quickxorhash?view=odsp-graph-online
+    """
+
+    BitsInLastCell = 32
+    Shift = 11
+    Threshold = 600
+    WidthInBits = 160
+
+    _MASK64 = 0xFFFFFFFFFFFFFFFF
+
+    def __init__(self):
+        self.Initialize()
+
+    def Initialize(self):
+        self._data = [0] * ((self.WidthInBits - 1) // 64 + 1)
+        self._shiftSoFar = 0
+        self._lengthSoFar = 0
+
+    def update(self, array, ibStart=0, cbSize=None):
+        if cbSize is None:
+            cbSize = len(array) - ibStart
+
+        currentShift = self._shiftSoFar
+
+        # The bitvector where we'll start xoring
+        vectorArrayIndex = currentShift // 64
+
+        # The position within the bit vector at which we begin xoring
+        vectorOffset = currentShift % 64
+        iterations = min(cbSize, self.WidthInBits)
+
+        for i in range(iterations):
+            isLastCell = vectorArrayIndex == len(self._data) - 1
+            bitsInVectorCell = self.BitsInLastCell if isLastCell else 64
+
+            # There's at least 2 bitvectors before we reach the end of the array
+            if vectorOffset <= bitsInVectorCell - 8:
+                for j in range(ibStart + i, cbSize + ibStart, self.WidthInBits):
+                    self._data[vectorArrayIndex] ^= array[j] << vectorOffset
+                self._data[vectorArrayIndex] &= self._MASK64
+            else:
+                index1 = vectorArrayIndex
+                index2 = 0 if isLastCell else (vectorArrayIndex + 1)
+                low = bitsInVectorCell - vectorOffset
+
+                xoredByte = 0
+                for j in range(ibStart + i, cbSize + ibStart, self.WidthInBits):
+                    xoredByte ^= array[j]
+                self._data[index1] = (
+                    self._data[index1] ^ (xoredByte << vectorOffset)
+                ) & self._MASK64
+                self._data[index2] ^= xoredByte >> low
+
+            vectorOffset += self.Shift
+            while vectorOffset >= bitsInVectorCell:
+                vectorArrayIndex = 0 if isLastCell else vectorArrayIndex + 1
+                vectorOffset -= bitsInVectorCell
+
+        # Update the starting position in a circular shift pattern
+        self._shiftSoFar = (
+            self._shiftSoFar + self.Shift * (cbSize % self.WidthInBits)
+        ) % self.WidthInBits
+
+        self._lengthSoFar += cbSize
+
+    def digest(self):
+        # Create a byte array big enough to hold all our data
+        rgb = bytearray((self.WidthInBits - 1) // 8 + 1)
+
+        # Block copy all our bitvectors to this byte array
+        for i in range(len(self._data) - 1):
+            rgb[i * 8 : i * 8 + 8] = self._data[i].to_bytes(8, "little")
+
+        last = len(self._data) - 1
+        tail_len = len(rgb) - last * 8
+        rgb[last * 8 :] = (self._data[last] & self._MASK64).to_bytes(8, "little")[
+            :tail_len
+        ]
+
+        # XOR the file length with the least significant bits
+        # Expected value is 8-bytes in length in little-endian format
+        lengthBytes = (self._lengthSoFar & self._MASK64).to_bytes(8, "little")
+        for i in range(len(lengthBytes)):
+            rgb[(self.WidthInBits // 8) - len(lengthBytes) + i] ^= lengthBytes[i]
+
+        return bytes(rgb)
+
+
 def _download_objects(
     item_id, drive_id, app, session, dest_dir, dest_root, executor, futures
 ):
@@ -188,7 +278,8 @@ def byte_size(num_bytes):
 def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
-    if is_complete(dest_path, expected_size, expected_mtime):
+    expected_hash = item.get("file", {}).get("hashes", {}).get("quickXorHash")
+    if is_complete(dest_path, expected_size, expected_mtime, expected_hash):
         print(
             f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}] ⭥",
             flush=True,
@@ -199,7 +290,14 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
         flush=True,
     )
     stream_with_retry(
-        item, drive_id, dest_path, expected_mtime, expected_size, app, session
+        item,
+        drive_id,
+        dest_path,
+        expected_mtime,
+        expected_size,
+        expected_hash,
+        app,
+        session,
     )
 
 
@@ -303,12 +401,16 @@ def get_root_item(sharing_url, token):
     return resp.json()
 
 
-def is_complete(dest_path, expected_size, expected_mtime):
+def is_complete(dest_path, expected_size, expected_mtime, expected_hash):
     if not os.path.exists(dest_path):
         return False
     if os.path.getsize(dest_path) != expected_size:
         return False
-    return abs(os.path.getmtime(dest_path) - expected_mtime) < 2  #  FAT32 limitation
+    if abs(os.path.getmtime(dest_path) - expected_mtime) >= 2:  # FAT32 limitation
+        return False
+    if expected_hash and quickxorhash_file(dest_path) != expected_hash:
+        return False
+    return True
 
 
 def is_hidden(path):
@@ -344,6 +446,14 @@ def paste_url(url_var):
     url_var.set(pyperclip.paste())
 
 
+def quickxorhash_file(path, chunk_size=4_194_304):
+    h = QuickXorHash()
+    with open(path, "rb") as f:
+        while chunk := f.read(chunk_size):
+            h.update(chunk)
+    return base64.b64encode(h.digest()).decode()
+
+
 def refresh_token(app):
     accounts = app.get_accounts()
     result = app.acquire_token_silent(scopes, account=accounts[0]) if accounts else None
@@ -373,7 +483,15 @@ def start_download(url_var, dir_var, button):
 
 
 def stream_with_retry(
-    item, drive_id, dest_path, mtime, expected_size, app, session, max_attempts=5
+    item,
+    drive_id,
+    dest_path,
+    mtime,
+    expected_size,
+    expected_hash,
+    app,
+    session,
+    max_attempts=5,
 ):
     part_path = dest_path + ".part"
     # discard any stale .part from a previous run - can't verify it matches this item
@@ -409,6 +527,16 @@ def stream_with_retry(
                 raise IOError(
                     f"ERROR: File size is {byte_size(actual_size)}, but expected {byte_size(expected_size)}."
                 )
+            if expected_hash:
+                actual_hash = quickxorhash_file(part_path)
+                if actual_hash != expected_hash:
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                    raise IOError(
+                        f"ERROR: File hash is {actual_hash}, but expected {expected_hash}."
+                    )
             os.replace(part_path, dest_path)
             os.utime(dest_path, (mtime, mtime))
             return
