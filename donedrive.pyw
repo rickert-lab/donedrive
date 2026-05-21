@@ -42,7 +42,7 @@ import requests
 
 client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive SyncEngine ID
 scopes = ["https://graph.microsoft.com/Files.Read"]  # Microsoft Graph API
-max_concurrent = 10  # max parallel downloads
+max_concurrent = 10  # max concurrent downloads
 
 
 class QuickXorHash:
@@ -307,6 +307,7 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
         item,
         drive_id,
         dest_path,
+        dest_root,
         expected_mtime,
         expected_size,
         expected_hash,
@@ -349,7 +350,7 @@ def download_folder(sharing_url, app, dest_dir):
             errors.append(e)
     if errors:
         for e in errors:
-            print(f"ERROR: {e}")
+            print(e, flush=True)
         raise errors[0]
     else:
         dirs, files, total = summarize_download(dest_dir)
@@ -395,9 +396,11 @@ def get_client_app():
     # fall back to device code flow
     flow = app.initiate_device_flow(scopes=scopes)
     if "user_code" not in flow:
-        raise RuntimeError(flow.get("error_description", "device flow init failed"))
+        raise RuntimeError(
+            f'ERROR: "{flow.get("error_description", "Device flow initialization failed.")}"'
+        )
     webbrowser.open("https://microsoft.com/devicelogin")
-    print(f'{os.linesep}"{flow["message"]}" - Microsoft', end=2 * os.linesep)
+    print(f'"{flow["message"]}" - Microsoft', end=2 * os.linesep)
     pyperclip.copy(flow["user_code"])
     print(
         f"Access code '{flow['user_code']}' copied to the clipboard. Paste the "
@@ -407,9 +410,11 @@ def get_client_app():
     )
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" not in result:
-        raise RuntimeError(result.get("error_description", "auth failed"))
+        raise RuntimeError(
+            f'ERROR: "{flow.get("error_description", "Device flow authentication failed.")}"'
+        )
     print(
-        f"Received access token, starting concurrent download:{os.linesep}",
+        f"Received access token, starting up to {max_concurrent} concurrent downloads:{os.linesep}",
         flush=True,
     )
     return app
@@ -494,7 +499,7 @@ def refresh_token(app):
     accounts = app.get_accounts()
     result = app.acquire_token_silent(scopes, account=accounts[0]) if accounts else None
     if not result or "access_token" not in result:
-        raise RuntimeError("token refresh failed - re-authenticate")
+        raise RuntimeError("ERROR: Device flow authentication expired.")
     return result["access_token"]
 
 
@@ -503,7 +508,7 @@ def start_download(url_var, dir_var, button):
     dest = dir_var.get().strip()
     if not url or not dest:
         return
-    print(f"ROOT:  {dest}", end=2 * os.linesep, flush=True)
+    print(f"ROOT:  {dest}{os.linesep}", flush=True)
     button.config(state="disabled")
 
     def worker():
@@ -514,17 +519,16 @@ def start_download(url_var, dir_var, button):
             stop = time.time()
             duration = stop - start
             with_rate = (
-                f" with ~{format_size(total / duration)}/s." if duration > 0 else ""
+                f" with ~{format_size(total / duration)}/s" if duration > 0 else ""
             )
             print(f"{os.linesep}{80 * '='}")
-            print(f"DIRS:  {dirs}")
-            print(f"FILES: {files} [{format_size(total)}]")
+            print(f"DIRS:  {dirs} ✓")
+            print(f"FILES: {files} [{format_size(total)}] ✓")
             print(f"{80 * '='}{os.linesep}")
             print(
-                f"Download completed in {format_duration(duration)}{with_rate}.{os.linesep}",
+                f"Download completed in {format_duration(duration)}{with_rate}.{2 * os.linesep}",
                 flush=True,
             )
-
         finally:
             # marshal Tk call back to the main thread
             button.after(0, lambda: button.config(state="normal"))
@@ -536,6 +540,7 @@ def stream_with_retry(
     item,
     drive_id,
     dest_path,
+    dest_root,
     mtime,
     expected_size,
     expected_hash,
@@ -546,10 +551,7 @@ def stream_with_retry(
     part_path = dest_path + ".part"
     # discard partial files from previous run
     if os.path.exists(part_path):
-        try:
-            os.remove(part_path)
-        except OSError:
-            pass
+        os.remove(part_path)
     # start download
     url = None
     for attempt in range(max_attempts):
@@ -577,20 +579,21 @@ def stream_with_retry(
                 except OSError:
                     pass
                 raise IOError(
-                    f"ERROR: File size for {os.path.basename(part_path)} is {format_size(actual_size)}, but expected {format_size(expected_size)}."
+                    f"ERROR: {os.path.sep + os.path.relpath(part_path, dest_root)} [{format_size(actual_size)}?] ↑"
                 )
             # compare file hash
-            actual_hash = quickxorhash_file(part_path)
-            if actual_hash != expected_hash:
-                try:
-                    os.remove(part_path)
-                except OSError:
-                    pass
-                raise IOError(
-                    f"ERROR: File hash for {os.path.basename(part_path)} is '{actual_hash}', but expected '{expected_hash}'."
-                )
+            if expected_hash:  # recent uploads might fail
+                actual_hash = quickxorhash_file(part_path)
+                if actual_hash != expected_hash:
+                    try:
+                        os.remove(part_path)
+                    except OSError:
+                        pass
+                    raise IOError(
+                        f"ERROR: {os.path.sep + os.path.relpath(part_path, dest_root)} [{format_size(actual_size)}!] ↑"
+                    )
             # finalize download
-            os.utime(dest_path, (mtime, mtime))  # set access time, modification time
+            os.utime(part_path, (mtime, mtime))  # set access time, modification time
             os.replace(part_path, dest_path)  # move file into final path
             return
         except (
@@ -609,7 +612,6 @@ def stream_with_retry(
         if attempt == max_attempts - 1:
             raise err
         wait = 2**attempt
-        print(f"RETRY: {dest_path} in {wait}s ({err})")
         time.sleep(wait)
 
 
