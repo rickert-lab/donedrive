@@ -31,6 +31,7 @@ import webbrowser
 
 from concurrent.futures import ThreadPoolExecutor
 from tkinter import filedialog
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -393,6 +394,8 @@ def get_client_app():
             return app
     # fall back to device code flow
     flow = app.initiate_device_flow(scopes=scopes)
+    if "user_code" not in flow:
+        raise RuntimeError(flow.get("error_description", "device flow init failed"))
     webbrowser.open("https://microsoft.com/devicelogin")
     print(f'{os.linesep}"{flow["message"]}" - Microsoft', end=2 * os.linesep)
     pyperclip.copy(flow["user_code"])
@@ -405,6 +408,10 @@ def get_client_app():
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" not in result:
         raise RuntimeError(result.get("error_description", "auth failed"))
+    print(
+        f"Received access token, starting concurrent download:{os.linesep}",
+        flush=True,
+    )
     return app
 
 
@@ -433,7 +440,7 @@ def get_root_item(sharing_url, token):
 def is_complete(dest_path, expected_size, expected_mtime, expected_hash):
     if not os.path.exists(dest_path):  # fast
         return False
-    if abs(os.path.getmtime(dest_path) - expected_mtime) >= 2:  # FAT32 limitation
+    if abs(os.path.getmtime(dest_path) - expected_mtime) > 2:  # 2 s FAT32 resolution
         return False
     if os.path.getsize(dest_path) != expected_size:  # slower
         return False
@@ -506,12 +513,15 @@ def start_download(url_var, dir_var, button):
             (dirs, files, total) = download_folder(url, app, dest)
             stop = time.time()
             duration = stop - start
+            with_rate = (
+                f" with ~{format_size(total / duration)}/s." if duration > 0 else ""
+            )
             print(f"{os.linesep}{80 * '='}")
             print(f"DIRS:  {dirs}")
             print(f"FILES: {files} [{format_size(total)}]")
             print(f"{80 * '='}{os.linesep}")
             print(
-                f"Download completed in {format_duration(duration)} with ~{format_size(total / duration)}/s.{os.linesep}",
+                f"Download completed in {format_duration(duration)}{with_rate}.{os.linesep}",
                 flush=True,
             )
 
@@ -534,12 +544,13 @@ def stream_with_retry(
     max_attempts=5,
 ):
     part_path = dest_path + ".part"
-    # discard any stale .part from a previous run - can't verify it matches this item
+    # discard partial files from previous run
     if os.path.exists(part_path):
         try:
             os.remove(part_path)
         except OSError:
             pass
+    # start download
     url = None
     for attempt in range(max_attempts):
         try:
@@ -558,6 +569,7 @@ def stream_with_retry(
                 with open(part_path, mode) as f:
                     for chunk in r.iter_content(chunk_size=4_194_304):
                         f.write(chunk)
+            # compare file size
             if os.path.getsize(part_path) != expected_size:
                 actual_size = os.path.getsize(part_path)
                 try:
@@ -567,18 +579,19 @@ def stream_with_retry(
                 raise IOError(
                     f"ERROR: File size for {os.path.basename(part_path)} is {format_size(actual_size)}, but expected {format_size(expected_size)}."
                 )
-            if expected_hash:
-                actual_hash = quickxorhash_file(part_path)
-                if actual_hash != expected_hash:
-                    try:
-                        os.remove(part_path)
-                    except OSError:
-                        pass
-                    raise IOError(
-                        f"ERROR: File hash for {os.path.basename(part_path)} is '{actual_hash}', but expected '{expected_hash}'."
-                    )
-            os.replace(part_path, dest_path)
-            os.utime(dest_path, (mtime, mtime))  # access time, modification time
+            # compare file hash
+            actual_hash = quickxorhash_file(part_path)
+            if actual_hash != expected_hash:
+                try:
+                    os.remove(part_path)
+                except OSError:
+                    pass
+                raise IOError(
+                    f"ERROR: File hash for {os.path.basename(part_path)} is '{actual_hash}', but expected '{expected_hash}'."
+                )
+            # finalize download
+            os.utime(dest_path, (mtime, mtime))  # set access time, modification time
+            os.replace(part_path, dest_path)  # move file into final path
             return
         except (
             requests.ConnectionError,
@@ -592,7 +605,7 @@ def stream_with_retry(
             if e.response.status_code not in (429, 500, 502, 503, 504):
                 raise
             err = e
-            url = None  # force refresh next attempt
+            url = None
         if attempt == max_attempts - 1:
             raise err
         wait = 2**attempt
@@ -618,10 +631,16 @@ def summarize_download(dest_dir):
 
 
 def update_download_state(url_var, dir_var, button):
-    url = url_var.get().strip().lower()
+    url = url_var.get().strip()
     dest = dir_var.get().strip()
     valid_domains = ("1drv.ms", "onedrive.live.com", "sharepoint.com", "onedrive.com")
-    url_ok = url.startswith("https://") and any(d in url for d in valid_domains)
+    try:
+        netloc = urlparse(url).netloc.lower()
+    except ValueError:
+        netloc = ""
+    url_ok = url.lower().startswith("https://") and any(
+        netloc == d or netloc.endswith("." + d) for d in valid_domains
+    )
     dir_ok = os.path.isdir(dest) and os.access(dest, os.W_OK)
     button.config(state="normal" if (url_ok and dir_ok) else "disabled")
 
