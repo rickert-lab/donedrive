@@ -16,4 +16,4 @@ A couple of features that _donedrive_ offers:
 * Incremental downloads of missing or changed files
 
 >[!CAUTION]
->Data integrity is not guaranteed.
+>The integrity of the downloaded data is confirmed by matching the modification times, sizes, and hashes of the local copies with those of the remote copies. However, the calculation of the QuickXorHash values is computationally expensive and will take some time - especially for large (> 1 GiB) files.
