@@ -206,7 +206,7 @@ def build_gui():
     url_frame = tk.Frame(root)
     url_frame.pack(fill="x", padx=10, pady=(10, 5))
     tk.Button(url_frame, text="Paste", command=lambda: paste_url(url_var)).pack(
-        side="left", padx=(5, 0), pady=(0, 5)
+        side="left", padx=(0, 5), pady=0
     )
     url_entry = tk.Entry(
         url_frame,
@@ -214,32 +214,34 @@ def build_gui():
         state="readonly",
         justify="left",
         width=60,
-        readonlybackground="gray30",
+        foreground="white",  # fix font color for dark/ligth mode switch (macos)
+        readonlybackground="gray30",  # color changes dynamically (macos)
     )
-    url_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
+    url_entry.pack(side="left", fill="x", expand=True, padx=0, pady=(4, 0))
 
     # download destination
     dir_frame = tk.Frame(root)
-    dir_frame.pack(fill="x", padx=10, pady=5)
+    dir_frame.pack(fill="x", padx=10, pady=(5, 10))
     dir_entry = tk.Entry(
         dir_frame,
         textvariable=dir_var,
         state="readonly",
         justify="right",
         width=60,
+        foreground="white",
         readonlybackground="gray30",
     )
-    dir_entry.pack(side="left", fill="x", expand=True)
+    dir_entry.pack(side="left", fill="x", expand=True, padx=0, pady=(4, 0))
     tk.Button(
         dir_frame, text="Browse", command=lambda: browse_folder(dir_var, dir_entry)
-    ).pack(side="left", padx=(5, 0), pady=(0, 5))
+    ).pack(side="left", padx=(5, 0), pady=0)
 
     download_btn = tk.Button(root, text="Download", state="disabled")
     download_btn.config(command=lambda: start_download(url_var, dir_var, download_btn))
-    download_btn.pack(pady=10)
+    download_btn.pack(padx=0, pady=(5, 0))
 
     footer = tk.Frame(root)
-    footer.pack(fill="x", side="bottom", padx=10, pady=(0, 10))
+    footer.pack(fill="x", side="bottom", padx=5, pady=5)
     # OneDrive status
     status = tk.Label(
         footer,
