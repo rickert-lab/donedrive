@@ -158,7 +158,7 @@ def _download_objects(
 ):
     if os.path.isdir(dest_dir):
         print(
-            f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ⭥", flush=True
+            f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ✓", flush=True
         )
     else:
         os.makedirs(dest_dir, exist_ok=True)
@@ -288,26 +288,18 @@ def build_gui():
     root.mainloop()
 
 
-def byte_size(num_bytes):
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if round(num_bytes, 1) < 1024:
-            return f"{num_bytes:.1f} {unit}"
-        num_bytes /= 1024
-    return f"{num_bytes:.1f} PiB"
-
-
 def download_file(item, drive_id, dest_path, dest_root, app, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     expected_hash = item.get("file", {}).get("hashes", {}).get("quickXorHash")
     if is_complete(dest_path, expected_size, expected_mtime, expected_hash):
         print(
-            f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}] ⭥",
+            f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{format_size(expected_size)}] ✓",
             flush=True,
         )
         return
     print(
-        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{byte_size(expected_size)}] ⭣",
+        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{format_size(expected_size)}] ⭣",
         flush=True,
     )
     stream_with_retry(
@@ -360,17 +352,33 @@ def download_folder(sharing_url, app, dest_dir):
         raise errors[0]
     else:
         dirs, files, total = summarize_download(dest_dir)
-        print(f"{os.linesep}{80 * '='}")
-        print(f"DIRS:  {dirs}")
-        print(f"FILES: {files} [{byte_size(total)}]")
-        print(f"{80 * '='}{os.linesep}")
-        print(f"Download complete.{os.linesep}")
+        return (dirs, files, total)
 
 
 def encode_sharing_url(url):
     # Microsoft Graph API requires base64url encoding with u! prefix
     encoded = base64.urlsafe_b64encode(url.encode()).rstrip(b"=").decode()
     return "u!" + encoded
+
+
+def format_duration(seconds):
+    if seconds < 60:
+        return f"{seconds:.1f} seconds"
+    h, r = divmod(round(seconds), 3_600)
+    m, s = divmod(r, 60)
+    if h:
+        return f"{h} hours, {m} minutes, and {s} seconds"
+    if m:
+        return f"{m} minutes and {s} seconds"
+    return f"{s} seconds"
+
+
+def format_size(num_bytes):
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if round(num_bytes, 1) < 1024:
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024
+    return f"{num_bytes:.1f} PiB"
 
 
 def get_client_app():
@@ -423,13 +431,13 @@ def get_root_item(sharing_url, token):
 
 
 def is_complete(dest_path, expected_size, expected_mtime, expected_hash):
-    if not os.path.exists(dest_path):
-        return False
-    if os.path.getsize(dest_path) != expected_size:
+    if not os.path.exists(dest_path):  # fast
         return False
     if abs(os.path.getmtime(dest_path) - expected_mtime) >= 2:  # FAT32 limitation
         return False
-    if expected_hash and quickxorhash_file(dest_path) != expected_hash:
+    if os.path.getsize(dest_path) != expected_size:  # slower
+        return False
+    if expected_hash and quickxorhash_file(dest_path) != expected_hash:  # slowest
         return False
     return True
 
@@ -488,17 +496,25 @@ def start_download(url_var, dir_var, button):
     dest = dir_var.get().strip()
     if not url or not dest:
         return
+    print(f"ROOT:  {dest}", end=2 * os.linesep, flush=True)
     button.config(state="disabled")
 
     def worker():
         try:
             app = get_client_app()
-            print(f"ROOT:  {dest}", end=2 * os.linesep, flush=True)
             start = time.time()
-            download_folder(url, app, dest)
-            end = time.time()
-            print(f"Duration: {end - start}s", flush=True)
-            print()
+            (dirs, files, total) = download_folder(url, app, dest)
+            stop = time.time()
+            duration = stop - start
+            print(f"{os.linesep}{80 * '='}")
+            print(f"DIRS:  {dirs}")
+            print(f"FILES: {files} [{format_size(total)}]")
+            print(f"{80 * '='}{os.linesep}")
+            print(
+                f"Download completed in {format_duration(duration)} with ~{format_size(total / duration)}/s.{os.linesep}",
+                flush=True,
+            )
+
         finally:
             # marshal Tk call back to the main thread
             button.after(0, lambda: button.config(state="normal"))
@@ -549,7 +565,7 @@ def stream_with_retry(
                 except OSError:
                     pass
                 raise IOError(
-                    f"ERROR: File size is {byte_size(actual_size)}, but expected {byte_size(expected_size)}."
+                    f"ERROR: File size for {os.path.basename(part_path)} is {format_size(actual_size)}, but expected {format_size(expected_size)}."
                 )
             if expected_hash:
                 actual_hash = quickxorhash_file(part_path)
@@ -559,10 +575,10 @@ def stream_with_retry(
                     except OSError:
                         pass
                     raise IOError(
-                        f"ERROR: File hash is {actual_hash}, but expected {expected_hash}."
+                        f"ERROR: File hash for {os.path.basename(part_path)} is '{actual_hash}', but expected '{expected_hash}'."
                     )
             os.replace(part_path, dest_path)
-            os.utime(dest_path, (mtime, mtime))
+            os.utime(dest_path, (mtime, mtime))  # access time, modification time
             return
         except (
             requests.ConnectionError,
