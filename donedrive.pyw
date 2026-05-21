@@ -527,7 +527,7 @@ def start_download(url_var, dir_var, button):
             print(f"FILES: {files} [{format_size(total)}] ✓")
             print(f"{80 * '='}{os.linesep}")
             print(
-                f"Download completed in {format_duration(duration)}{with_rate}.{2 * os.linesep}",
+                f"Download completed in {format_duration(duration)}{with_rate}.",
                 flush=True,
             )
         finally:
