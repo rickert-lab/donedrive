@@ -1,9 +1,8 @@
-# python == 3.12  # Windows 11
-# python>=3.14 # LINUX, macOS
+# python>=3.14
 msal
 numpy
 pyperclip
 requests
 
 # pyInstaller
-# pyInstaller --clean --onefile --optimize 2 --strip donedrive.pyw
+# pyInstaller --clean --onefile --optimize 2 donedrive.pyw

@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 
 Author:     Christian Rickert <christian.rickert@cuanschutz.edu>
-Date:       2026-05-19
+Date:       2026-05-21
 Version:    0.1
 """
 
@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 
 import numpy as np
 
+# os.environ["GTK_MODULES"] = ""  # do not autload 'atk-bridge' (LINUX)
 import msal
 import pyperclip
 import requests
