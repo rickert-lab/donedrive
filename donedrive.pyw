@@ -467,7 +467,7 @@ def paste_url(url_var):
     url_var.set(pyperclip.paste())
 
 
-def quickxorhash_file(path, chunk_size=4_194_304):
+def quickxorhash_file(path, chunk_size=16_777_216):  # 16 MiB
     h = QuickXorHash()
     with open(path, "rb") as f:
         while chunk := f.read(chunk_size):
