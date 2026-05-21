@@ -508,6 +508,7 @@ def start_download(url_var, dir_var, button):
     dest = dir_var.get().strip()
     if not url or not dest:
         return
+    print(f"{os.linesep}{80 * '='}")
     print(f"ROOT:  {dest}{os.linesep}", flush=True)
     button.config(state="disabled")
 
