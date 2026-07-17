@@ -386,6 +386,21 @@ def format_size(num_bytes):
     return f"{num_bytes:.1f} PiB"
 
 
+def graph_get(url, headers, params=None, timeout=30):
+    # Cross-tenant guest hydration: SharePoint may 403 until the guest context
+    # is provisioned in the resource tenant. A 403 on any /groups/ call forces
+    # hydration; retrying the original request then succeeds.
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if resp.status_code == 403:
+        requests.get(
+            "https://graph.microsoft.com/v1.0/groups/00000000-0000-0000-0000-000000000000/drive",
+            headers=headers,
+            timeout=30,
+        )
+        resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    return resp
+
+
 def get_client_app():
     app = msal.PublicClientApplication(
         client_id, authority="https://login.microsoftonline.com/common"
@@ -427,7 +442,7 @@ def get_item(item_id, drive_id, token):
     # no $select - downloadUrl comes by default for file items
     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers, timeout=60)
+    resp = graph_get(url, headers, timeout=60)
     resp.raise_for_status()
     return resp.json()
 
@@ -435,9 +450,9 @@ def get_item(item_id, drive_id, token):
 def get_root_item(sharing_url, token):
     encoded = encode_sharing_url(sharing_url)
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(
+    resp = graph_get(
         f"https://graph.microsoft.com/v1.0/shares/{encoded}/driveItem",
-        headers=headers,
+        headers,
         params={"$select": "id,name,parentReference"},
         timeout=30,
     )
@@ -473,7 +488,7 @@ def list_objects(item_id, drive_id, token):
     params = {"$select": "id,name,file,folder,size,lastModifiedDateTime"}
     headers = {"Authorization": f"Bearer {token}"}
     while url:
-        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp = graph_get(url, headers, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         yield from data.get("value", [])
