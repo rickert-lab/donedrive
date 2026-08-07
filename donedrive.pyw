@@ -16,10 +16,11 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 
 Author:     Christian Rickert <christian.rickert@cuanschutz.edu>
-Date:       2026-05-21
-Version:    0.1
+Date:       2026-08-07
+Version:    0.15
 """
 
+import atexit
 import base64
 import datetime
 import os
@@ -41,8 +42,8 @@ import pyperclip
 import requests
 
 
-client_id = "ab9b8c07-8f02-4f72-87fa-80105867a763"  # OneDrive SyncEngine ID
-scopes = ["https://graph.microsoft.com/Files.Read"]  # Microsoft Graph API
+client_id = "3174d5b6-59a3-4abd-87e4-2ddbb7e1eb01"  # Download Assistant for SharePoint by Christian Rickert
+scopes = ["https://graph.microsoft.com/Files.Read.All"]  # Microsoft Graph API
 max_concurrent = 10  # max concurrent downloads
 
 
@@ -264,7 +265,7 @@ def build_gui():
     # author
     author = tk.Label(
         footer,
-        text="Version 0.1 by Christian Rickert. ↗",
+        text="Version 0.15 by Christian Rickert. ↗",
         fg="dodger blue",
         font=("TkDefaultFont", 10),
     )
@@ -279,7 +280,9 @@ def build_gui():
     author.bind("<Leave>", lambda _e: author.config(font=("TkDefaultFont", 10)))
 
     # keep track of download status
-    update = lambda *_: update_download_state(url_var, dir_var, download_btn)
+    def update(*_):
+        update_download_state(url_var, dir_var, download_btn)
+
     url_var.trace_add("write", update)
     dir_var.trace_add("write", update)
 
@@ -392,6 +395,7 @@ def graph_get(url, headers, params=None, timeout=30):
     # hydration; retrying the original request then succeeds.
     resp = requests.get(url, headers=headers, params=params, timeout=timeout)
     if resp.status_code == 403:
+        print("WARN:  403 - forcing guest hydration", flush=True)
         requests.get(
             "https://graph.microsoft.com/v1.0/groups/00000000-0000-0000-0000-000000000000/drive",
             headers=headers,
@@ -401,9 +405,22 @@ def graph_get(url, headers, params=None, timeout=30):
     return resp
 
 
-def get_client_app():
+def get_client_app(tenant_id):
+    cache = msal.SerializableTokenCache()
+    cache_path = os.path.join(os.path.expanduser("~"), ".donedrive_cache.json")
+    if os.path.exists(cache_path):
+        cache.deserialize(open(cache_path, "r").read())
+    atexit.register(
+        lambda: (
+            open(cache_path, "w").write(cache.serialize())
+            if cache.has_state_changed
+            else None
+        )
+    )
     app = msal.PublicClientApplication(
-        client_id, authority="https://login.microsoftonline.com/common"
+        client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        token_cache=cache,
     )
     # try silent refresh first
     accounts = app.get_accounts()
@@ -458,6 +475,20 @@ def get_root_item(sharing_url, token):
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def get_tenant_id(sharing_url):
+    # resolve short links (1drv.ms) to the actual SharePoint host
+    with requests.get(sharing_url, allow_redirects=True, stream=True, timeout=30) as r:
+        host = urlparse(r.url).netloc
+    tenant = host.split(".")[0].removesuffix("-my")  # "cuanschutz-my" -> "cuanschutz"
+    resp = requests.get(
+        f"https://login.microsoftonline.com/{tenant}.onmicrosoft.com"
+        "/v2.0/.well-known/openid-configuration",
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()["issuer"].split("/")[3]  # ".../{tenant_id}/v2.0"
 
 
 def is_complete(dest_path, expected_size, expected_mtime, expected_hash):
@@ -532,7 +563,7 @@ def start_download(url_var, dir_var, button):
 
     def worker():
         try:
-            app = get_client_app()
+            app = get_client_app(get_tenant_id(url))
             start = time.time()
             (dirs, files, total) = download_folder(url, app, dest)
             stop = time.time()
@@ -604,6 +635,7 @@ def stream_with_retry(
             if expected_hash:  # recent uploads might fail
                 actual_hash = quickxorhash_file(part_path)
                 if actual_hash != expected_hash:
+                    actual_size = os.path.getsize(part_path)
                     try:
                         os.remove(part_path)
                     except OSError:
@@ -628,6 +660,14 @@ def stream_with_retry(
                 raise
             err = e
             url = None
+        except (
+            requests.ConnectionError,
+            requests.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            IOError,
+        ) as e:
+            err = e
+            url = None  # force refresh next attempt
         if attempt == max_attempts - 1:
             raise err
         wait = 2**attempt
