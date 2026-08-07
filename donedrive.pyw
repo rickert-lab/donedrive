@@ -647,14 +647,6 @@ def stream_with_retry(
             os.utime(part_path, (mtime, mtime))  # set access time, modification time
             os.replace(part_path, dest_path)  # move file into final path
             return
-        except (
-            requests.ConnectionError,
-            requests.Timeout,
-            requests.exceptions.ChunkedEncodingError,
-            IOError,
-        ) as e:
-            err = e
-            url = None  # force refresh next attempt
         except requests.HTTPError as e:
             if e.response.status_code not in (429, 500, 502, 503, 504):
                 raise
