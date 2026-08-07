@@ -1,6 +1,7 @@
 # Specify filepatterns you want git to ignore.
 /build
 /dist
+/Entra-ID
 /releases
 *.spec
 *.swp
