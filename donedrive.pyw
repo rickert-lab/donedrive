@@ -108,10 +108,8 @@ class QuickXorHash:
 
             # there's at least 2 bitvectors before we reach the end of the array
             if vectorOffset <= bitsInVectorCell - 8:
-                # whole byte fits inside the current 64-bit cell
-                self._data[vectorArrayIndex] = (
-                    self._data[vectorArrayIndex] ^ (xoredByte << vectorOffset)
-                ) & self._MASK64
+                # whole byte fits inside the current 64-bit cell - no mask needed
+                self._data[vectorArrayIndex] ^= xoredByte << vectorOffset
             else:
                 # byte straddles the cell boundary - split across two cells, wrapping at the end
                 index1 = vectorArrayIndex
@@ -548,7 +546,7 @@ def start_download(url_var, dir_var, button):
                 flush=True,
             )
         except DownloadCancelled:
-            print(f"{os.linesep}Download cancelled.", flush=True)
+            print(f"NOTE: Download cancelled.{os.linesep}", flush=True)
         finally:
             if not cancel_event.is_set():  # widget is gone after root.destroy()
                 # marshal Tk call back to the main thread
