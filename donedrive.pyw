@@ -319,8 +319,13 @@ def download_file(item, drive_id, dest_path, dest_root, api, session):
             flush=True,
         )
         return
+    part_path = dest_path + ".part"
+    # stale partials are discarded in stream_with_retry, so only flag reusable ones
+    resuming = os.path.exists(part_path) and is_resumable(
+        part_path, expected_mtime, expected_size
+    )
     print(
-        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{format_size(expected_size)}] ⭣",
+        f"FILE:  {os.path.sep + os.path.relpath(dest_path, dest_root)} [{format_size(expected_size)}] {'⇵' if resuming else '⭣'}",
         flush=True,
     )
     stream_with_retry(
@@ -471,6 +476,13 @@ def is_hidden(path):
     return False
 
 
+def is_resumable(part_path, expected_mtime, expected_size):
+    # a partial is reusable only if it carries this item version's timestamp
+    if abs(os.path.getmtime(part_path) - expected_mtime) > 2:  # 2 s FAT32 resolution
+        return False
+    return 0 < os.path.getsize(part_path) < expected_size
+
+
 def list_objects(item_id, drive_id, api, session):
     url = f"{api}/drives/{drive_id}/items/{item_id}/children"
     params = {"$select": "id,name,file,folder,size,lastModifiedDateTime"}
@@ -558,8 +570,9 @@ def start_download(url_var, dir_var, button):
         except DownloadCancelled:
             print(f"{os.linesep}NOTE: Download cancelled.{os.linesep}", flush=True)
         except Exception as e:  # keep failures in the same stream as the file log
-            print(f"{os.linesep}{80 * '='}")
-            print(f"Download failed: {type(e).__name__}: {e}", flush=True)
+            print(
+                f"{os.linesep}NOTE: Download error.{type(e).__name__}: {e}", flush=True
+            )
         finally:
             try:
                 # marshal Tk call back to the main thread
@@ -583,8 +596,8 @@ def stream_with_retry(
     max_attempts=5,
 ):
     part_path = dest_path + ".part"
-    # discard partial files from previous run
-    if os.path.exists(part_path):
+    # discard partial files that don't match the current item version (modification date)
+    if os.path.exists(part_path) and not is_resumable(part_path, mtime, expected_size):
         os.remove(part_path)
     # start download
     url = None
@@ -599,6 +612,16 @@ def stream_with_retry(
                 if resume_from and r.status_code != 206:
                     resume_from = 0
                 mode = "ab" if resume_from else "wb"
+                try:
+                    with open(part_path, mode) as f:
+                        for chunk in r.iter_content(chunk_size=4_194_304):
+                            if cancel_event.is_set():
+                                raise DownloadCancelled
+                            f.write(chunk)
+                finally:
+                    if os.path.exists(part_path):
+                        # stamp the partial so a later run can identify it
+                        os.utime(part_path, (mtime, mtime))
                 with open(part_path, mode) as f:
                     for chunk in r.iter_content(chunk_size=4_194_304):
                         if cancel_event.is_set():
