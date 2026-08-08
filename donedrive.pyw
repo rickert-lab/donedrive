@@ -373,12 +373,12 @@ def download_folder(sharing_url, dest_dir):
             raise  # abort: report the cause, not the cancellation it triggered
         except Exception as e:
             errors.append(e)
+    if cancel_event.is_set():  # cancelling can trip other workers: report the cause
+        raise DownloadCancelled
     if errors:
         for e in errors:
             print(e, flush=True)
         raise errors[0]
-    if cancel_event.is_set():
-        raise DownloadCancelled
     return summarize_download(dest_dir)
 
 
@@ -570,9 +570,7 @@ def start_download(url_var, dir_var, button):
         except DownloadCancelled:
             print(f"{os.linesep}NOTE: Download cancelled.{os.linesep}", flush=True)
         except Exception as e:  # keep failures in the same stream as the file log
-            print(
-                f"{os.linesep}NOTE: Download error.{type(e).__name__}: {e}", flush=True
-            )
+            print(f"ERROR: Download failed: {type(e).__name__}: {e}", flush=True)
         finally:
             try:
                 # marshal Tk call back to the main thread
@@ -622,11 +620,6 @@ def stream_with_retry(
                     if os.path.exists(part_path):
                         # stamp the partial so a later run can identify it
                         os.utime(part_path, (mtime, mtime))
-                with open(part_path, mode) as f:
-                    for chunk in r.iter_content(chunk_size=4_194_304):
-                        if cancel_event.is_set():
-                            raise DownloadCancelled
-                        f.write(chunk)
             # compare file size
             if os.path.getsize(part_path) != expected_size:
                 actual_size = os.path.getsize(part_path)
