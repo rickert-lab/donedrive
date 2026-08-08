@@ -29,7 +29,7 @@ import time
 import tkinter as tk
 import webbrowser
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from tkinter import filedialog
 from urllib.parse import urlparse
 
@@ -41,6 +41,11 @@ import requests
 
 
 max_concurrent = 10  # max concurrent downloads
+cancel_event = threading.Event()  # set on window close to abort in-flight downloads
+
+
+class DownloadCancelled(Exception):
+    """Raised in worker threads when the user closes the window."""
 
 
 class QuickXorHash:
@@ -165,6 +170,8 @@ def _download_objects(
             f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ⭣", flush=True
         )
     for item in list_objects(item_id, drive_id, api, session):
+        if cancel_event.is_set():
+            break
         dest_path = safe_join(dest_dir, item["name"])
         if "folder" in item:  # recurse
             _download_objects(
@@ -281,6 +288,13 @@ def build_gui():
     url_var.trace_add("write", update)
     dir_var.trace_add("write", update)
 
+    # abort in-flight downloads instead of blocking on them at exit
+    def on_close():
+        cancel_event.set()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+
     # limit resizing to width
     root.update_idletasks()  # force geometry calculation before querying size
     root.minsize(root.winfo_width(), root.winfo_height())
@@ -291,6 +305,8 @@ def build_gui():
 
 
 def download_file(item, drive_id, dest_path, dest_root, api, session):
+    if cancel_event.is_set():  # future started before shutdown reached it
+        return
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     expected_hash = item.get("file", {}).get("hashes", {}).get("quickXorHash")
@@ -321,33 +337,40 @@ def download_folder(sharing_url, dest_dir):
     session, api = get_anonymous_session(sharing_url)
     root = get_root_item(sharing_url, api, session)
     drive_id = root["parentReference"]["driveId"]
-    dest_dir = os.path.join(dest_dir, root["name"])
+    dest_dir = safe_join(dest_dir, root["name"])
     futures = []
     with session, ThreadPoolExecutor(max_workers=max_concurrent) as executor:
-        _download_objects(
-            root["id"],
-            drive_id,
-            api,
-            session,
-            dest_dir,
-            os.path.dirname(dest_dir),  # dest_root
-            executor,
-            futures,
-        )
+        try:
+            _download_objects(
+                root["id"],
+                drive_id,
+                api,
+                session,
+                dest_dir,
+                os.path.dirname(dest_dir),  # dest_root
+                executor,
+                futures,
+            )
+        finally:
+            if cancel_event.is_set():
+                executor.shutdown(cancel_futures=True)  # drop queued downloads
     # surface exceptions from worker threads (with-block already waited for all)
     errors = []
     for f in futures:
         try:
             f.result()
+        except (CancelledError, DownloadCancelled):  # window closed
+            pass
         except Exception as e:
             errors.append(e)
     if errors:
         for e in errors:
             print(e, flush=True)
         raise errors[0]
-    else:
-        dirs, files, total = summarize_download(dest_dir)
-        return (dirs, files, total)
+    if cancel_event.is_set():
+        raise DownloadCancelled
+    dirs, files, total = summarize_download(dest_dir)
+    return (dirs, files, total)
 
 
 def encode_sharing_url(url):
@@ -524,9 +547,12 @@ def start_download(url_var, dir_var, button):
                 f"Download completed in {format_duration(duration)}{with_rate}.",
                 flush=True,
             )
+        except DownloadCancelled:
+            print(f"{os.linesep}Download cancelled.", flush=True)
         finally:
-            # marshal Tk call back to the main thread
-            button.after(0, lambda: button.config(state="normal"))
+            if not cancel_event.is_set():  # widget is gone after root.destroy()
+                # marshal Tk call back to the main thread
+                button.after(0, lambda: button.config(state="normal"))
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -562,6 +588,8 @@ def stream_with_retry(
                 mode = "ab" if resume_from else "wb"
                 with open(part_path, mode) as f:
                     for chunk in r.iter_content(chunk_size=4_194_304):
+                        if cancel_event.is_set():
+                            raise DownloadCancelled
                         f.write(chunk)
             # compare file size
             if os.path.getsize(part_path) != expected_size:
@@ -605,7 +633,8 @@ def stream_with_retry(
         if attempt == max_attempts - 1:
             raise err
         wait = 2**attempt
-        time.sleep(wait)
+        if cancel_event.wait(wait):  # interruptible backoff
+            raise DownloadCancelled
 
 
 def summarize_download(dest_dir):
