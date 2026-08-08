@@ -165,7 +165,7 @@ def _download_objects(
             f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ⭣", flush=True
         )
     for item in list_objects(item_id, drive_id, api, session):
-        dest_path = os.path.join(dest_dir, item["name"])
+        dest_path = safe_join(dest_dir, item["name"])
         if "folder" in item:  # recurse
             _download_objects(
                 item["id"],
@@ -413,9 +413,10 @@ def get_root_item(sharing_url, api, session):
         if e.response.status_code not in (401, 403):
             raise
         raise RuntimeError(
-            "ERROR: The share link requires a sign-in. Ask the sender to share "
-            'the folder with the "Anyone with the link" option instead - links '
-            "addressed to a specific person cannot be used by this program."
+            os.linesep
+            + "NOTE: The share link requires a sign-in. Ask the sender to share "
+            'the folder with the "Anyone with the link" option instead: Shares '
+            "addressed to a specific person cannot be accessed by this program."
         ) from e
 
 
@@ -467,6 +468,28 @@ def quickxorhash_file(path, chunk_size=16_777_216):  # 16 MiB
         while chunk := f.read(chunk_size):
             h.update(chunk)
     return base64.b64encode(h.digest()).decode()
+
+
+def safe_join(dest_dir, name):
+    dest_path = os.path.join(dest_dir, sanitize_name(name))
+    # belt and braces: the joined path must be a direct child of dest_dir
+    if os.path.dirname(os.path.abspath(dest_path)) != os.path.abspath(dest_dir):
+        raise ValueError(f"ERROR: item escapes the destination directory: {name!r}")
+    return dest_path
+
+
+def sanitize_name(name):
+    # reject traversal: a name must be one ordinary component, not a path
+    # (os.path.basename ignores backslashes outside Windows, so test it here)
+    if name in ("", ".", "..") or os.path.basename(name) != name or "\\" in name:
+        raise ValueError(f"ERROR: unsafe item name: {name!r}")
+    clean = "".join("_" if c in '<>:"/\\|?*' or ord(c) < 32 else c for c in name)
+    clean = clean.rstrip(
+        ". "
+    )  # Windows drops these silently, breaking size/hash checks
+    if not clean:
+        raise ValueError(f"ERROR: item name is empty after sanitizing: {name!r}")
+    return clean
 
 
 def spo_get(session, url, params=None, timeout=30):
