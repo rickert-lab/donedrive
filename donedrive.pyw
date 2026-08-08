@@ -49,6 +49,10 @@ class DownloadCancelled(Exception):
     """Raised in worker threads when the user closes the window."""
 
 
+class DownloadFailed(Exception):
+    """Raised when one or more files could not be downloaded."""
+
+
 class DownloadMismatch(Exception):
     """Raised when a completed download fails its size or hash check."""
 
@@ -381,7 +385,7 @@ def download_folder(sharing_url, dest_dir):
     if errors:
         for e in errors:
             print(e, flush=True)
-        raise errors[0]
+        raise DownloadFailed(len(errors))
     return summarize_download(dest_dir)
 
 
@@ -572,6 +576,8 @@ def start_download(url_var, dir_var, button):
             print(f"{os.linesep}NOTE: Out of disk space.{os.linesep}", flush=True)
         except DownloadCancelled:
             print(f"{os.linesep}NOTE: Download cancelled.{os.linesep}", flush=True)
+        except DownloadFailed as e:  # individual failures are already logged above
+            print(f"{os.linesep}NOTE: {e} file(s) failed.{os.linesep}", flush=True)
         except Exception as e:  # keep failures in the same stream as the file log
             print(f"ERROR: Download failed: {type(e).__name__}: {e}", flush=True)
         finally:
