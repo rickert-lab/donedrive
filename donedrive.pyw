@@ -17,10 +17,9 @@ this program. If not, see <https://www.gnu.org/licenses/>.
 
 Author:     Christian Rickert <christian.rickert@cuanschutz.edu>
 Date:       2026-08-07
-Version:    0.15
+Version:    0.2
 """
 
-import atexit
 import base64
 import datetime
 import os
@@ -37,13 +36,10 @@ from urllib.parse import urlparse
 import numpy as np
 
 # os.environ["GTK_MODULES"] = ""  # do not autload 'atk-bridge' (LINUX)
-import msal
 import pyperclip
 import requests
 
 
-client_id = "3174d5b6-59a3-4abd-87e4-2ddbb7e1eb01"  # Download Assistant for SharePoint by Christian Rickert
-scopes = ["https://graph.microsoft.com/Files.Read.All"]  # Microsoft Graph API
 max_concurrent = 10  # max concurrent downloads
 
 
@@ -157,7 +153,7 @@ class QuickXorHash:
 
 
 def _download_objects(
-    item_id, drive_id, app, session, dest_dir, dest_root, executor, futures
+    item_id, drive_id, api, session, dest_dir, dest_root, executor, futures
 ):
     if os.path.isdir(dest_dir):
         print(
@@ -168,14 +164,13 @@ def _download_objects(
         print(
             f"DIR:   {os.path.sep + os.path.relpath(dest_dir, dest_root)} ⭣", flush=True
         )
-    token = refresh_token(app)
-    for item in list_objects(item_id, drive_id, token):
+    for item in list_objects(item_id, drive_id, api, session):
         dest_path = os.path.join(dest_dir, item["name"])
         if "folder" in item:  # recurse
             _download_objects(
                 item["id"],
                 drive_id,
-                app,
+                api,
                 session,
                 dest_path,
                 dest_root,
@@ -185,7 +180,7 @@ def _download_objects(
         elif "file" in item:  # download
             futures.append(
                 executor.submit(
-                    download_file, item, drive_id, dest_path, dest_root, app, session
+                    download_file, item, drive_id, dest_path, dest_root, api, session
                 )
             )
 
@@ -265,7 +260,7 @@ def build_gui():
     # author
     author = tk.Label(
         footer,
-        text="Version 0.15 by Christian Rickert. ↗",
+        text="Version 0.2 by Christian Rickert. ↗",
         fg="dodger blue",
         font=("TkDefaultFont", 10),
     )
@@ -295,7 +290,7 @@ def build_gui():
     root.mainloop()
 
 
-def download_file(item, drive_id, dest_path, dest_root, app, session):
+def download_file(item, drive_id, dest_path, dest_root, api, session):
     expected_size = item["size"]
     expected_mtime = parse_mtime(item["lastModifiedDateTime"])
     expected_hash = item.get("file", {}).get("hashes", {}).get("quickXorHash")
@@ -317,30 +312,22 @@ def download_file(item, drive_id, dest_path, dest_root, app, session):
         expected_mtime,
         expected_size,
         expected_hash,
-        app,
+        api,
         session,
     )
 
 
-def download_folder(sharing_url, app, dest_dir):
-    token = refresh_token(app)
-    root = get_root_item(sharing_url, token)
+def download_folder(sharing_url, dest_dir):
+    session, api = get_anonymous_session(sharing_url)
+    root = get_root_item(sharing_url, api, session)
     drive_id = root["parentReference"]["driveId"]
     dest_dir = os.path.join(dest_dir, root["name"])
     futures = []
-    with (
-        requests.Session() as session,
-        ThreadPoolExecutor(max_workers=max_concurrent) as executor,
-    ):
-        # match pool size to worker count so threads don't serialize on the pool
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=max_concurrent, pool_maxsize=max_concurrent
-        )
-        session.mount("https://", adapter)
+    with session, ThreadPoolExecutor(max_workers=max_concurrent) as executor:
         _download_objects(
             root["id"],
             drive_id,
-            app,
+            api,
             session,
             dest_dir,
             os.path.dirname(dest_dir),  # dest_root
@@ -389,106 +376,47 @@ def format_size(num_bytes):
     return f"{num_bytes:.1f} PiB"
 
 
-def graph_get(url, headers, params=None, timeout=30):
-    # Cross-tenant guest hydration: SharePoint may 403 until the guest context
-    # is provisioned in the resource tenant. A 403 on any /groups/ call forces
-    # hydration; retrying the original request then succeeds.
-    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-    if resp.status_code == 403:
-        print("WARN:  403 - forcing guest hydration", flush=True)
-        requests.get(
-            "https://graph.microsoft.com/v1.0/groups/00000000-0000-0000-0000-000000000000/drive",
-            headers=headers,
-            timeout=30,
-        )
-        resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-    return resp
-
-
-def get_client_app(tenant_id):
-    cache = msal.SerializableTokenCache()
-    cache_path = os.path.join(os.path.expanduser("~"), ".donedrive_cache.json")
-    if os.path.exists(cache_path):
-        cache.deserialize(open(cache_path, "r").read())
-    atexit.register(
-        lambda: (
-            open(cache_path, "w").write(cache.serialize())
-            if cache.has_state_changed
-            else None
-        )
+def get_anonymous_session(sharing_url):
+    # follow the share link so SharePoint sets its anonymous access cookie
+    session = requests.Session()
+    session.headers["User-Agent"] = "Mozilla/5.0"  # SPO rejects the default UA
+    # match pool size to worker count so threads don't serialize on the pool
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=max_concurrent, pool_maxsize=max_concurrent
     )
-    app = msal.PublicClientApplication(
-        client_id,
-        authority=f"https://login.microsoftonline.com/{tenant_id}",
-        token_cache=cache,
-    )
-    # try silent refresh first
-    accounts = app.get_accounts()
-    if accounts:
-        result = app.acquire_token_silent(scopes, account=accounts[0])
-        if result and "access_token" in result:
-            return app
-    # fall back to device code flow
-    flow = app.initiate_device_flow(scopes=scopes)
-    if "user_code" not in flow:
-        raise RuntimeError(
-            f'ERROR: "{flow.get("error_description", "Device flow initialization failed.")}"'
-        )
-    webbrowser.open("https://microsoft.com/devicelogin")
-    print(f'"{flow["message"]}" - Microsoft', end=2 * os.linesep)
-    pyperclip.copy(flow["user_code"])
+    session.mount("https://", adapter)
+    with session.get(sharing_url, allow_redirects=True, stream=True, timeout=30) as r:
+        r.raise_for_status()
+        host = urlparse(r.url).netloc  # resolves short links (1drv.ms) as well
     print(
-        f"Access code '{flow['user_code']}' copied to the clipboard. Paste the "
-        "code into the device authenticator. Then pick your Microsoft account "
-        "and sign in to the OneDrive SyncEngine to begin your download!",
-        end=2 * os.linesep,
-    )
-    result = app.acquire_token_by_device_flow(flow)
-    if "access_token" not in result:
-        raise RuntimeError(
-            f'ERROR: "{flow.get("error_description", "Device flow authentication failed.")}"'
-        )
-    print(
-        f"Received access token, starting up to {max_concurrent} concurrent downloads:{os.linesep}",
+        f"Opened share link, starting up to {max_concurrent} concurrent downloads:{os.linesep}",
         flush=True,
     )
-    return app
+    return session, f"https://{host}/_api/v2.0"
 
 
-def get_item(item_id, drive_id, token):
-    # no $select - downloadUrl comes by default for file items
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = graph_get(url, headers, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
+def get_download_url(item_id, drive_id, api, session):
+    # SPO v2.0 names it "@content.downloadUrl"; Graph uses "@microsoft.graph.downloadUrl"
+    item = spo_get(session, f"{api}/drives/{drive_id}/items/{item_id}", timeout=60)
+    return item.get("@content.downloadUrl") or item["@microsoft.graph.downloadUrl"]
 
 
-def get_root_item(sharing_url, token):
+def get_root_item(sharing_url, api, session):
     encoded = encode_sharing_url(sharing_url)
-    headers = {"Authorization": f"Bearer {token}"}
-    resp = graph_get(
-        f"https://graph.microsoft.com/v1.0/shares/{encoded}/driveItem",
-        headers,
-        params={"$select": "id,name,parentReference"},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def get_tenant_id(sharing_url):
-    # resolve short links (1drv.ms) to the actual SharePoint host
-    with requests.get(sharing_url, allow_redirects=True, stream=True, timeout=30) as r:
-        host = urlparse(r.url).netloc
-    tenant = host.split(".")[0].removesuffix("-my")  # "cuanschutz-my" -> "cuanschutz"
-    resp = requests.get(
-        f"https://login.microsoftonline.com/{tenant}.onmicrosoft.com"
-        "/v2.0/.well-known/openid-configuration",
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["issuer"].split("/")[3]  # ".../{tenant_id}/v2.0"
+    try:
+        return spo_get(
+            session,
+            f"{api}/shares/{encoded}/driveItem",
+            params={"$select": "id,name,parentReference"},
+        )
+    except requests.HTTPError as e:
+        if e.response.status_code not in (401, 403):
+            raise
+        raise RuntimeError(
+            "ERROR: The share link requires a sign-in. Ask the sender to share "
+            'the folder with the "Anyone with the link" option instead - links '
+            "addressed to a specific person cannot be used by this program."
+        ) from e
 
 
 def is_complete(dest_path, expected_size, expected_mtime, expected_hash):
@@ -514,14 +442,11 @@ def is_hidden(path):
     return False
 
 
-def list_objects(item_id, drive_id, token):
-    url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/children"
+def list_objects(item_id, drive_id, api, session):
+    url = f"{api}/drives/{drive_id}/items/{item_id}/children"
     params = {"$select": "id,name,file,folder,size,lastModifiedDateTime"}
-    headers = {"Authorization": f"Bearer {token}"}
     while url:
-        resp = graph_get(url, headers, params=params, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
+        data = spo_get(session, url, params=params)
         yield from data.get("value", [])
         url = data.get("@odata.nextLink")
         params = None
@@ -544,12 +469,10 @@ def quickxorhash_file(path, chunk_size=16_777_216):  # 16 MiB
     return base64.b64encode(h.digest()).decode()
 
 
-def refresh_token(app):
-    accounts = app.get_accounts()
-    result = app.acquire_token_silent(scopes, account=accounts[0]) if accounts else None
-    if not result or "access_token" not in result:
-        raise RuntimeError("ERROR: Device flow authentication expired.")
-    return result["access_token"]
+def spo_get(session, url, params=None, timeout=30):
+    resp = session.get(url, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def start_download(url_var, dir_var, button):
@@ -563,9 +486,8 @@ def start_download(url_var, dir_var, button):
 
     def worker():
         try:
-            app = get_client_app(get_tenant_id(url))
             start = time.time()
-            (dirs, files, total) = download_folder(url, app, dest)
+            (dirs, files, total) = download_folder(url, dest)
             stop = time.time()
             duration = stop - start
             with_rate = (
@@ -594,7 +516,7 @@ def stream_with_retry(
     mtime,
     expected_size,
     expected_hash,
-    app,
+    api,
     session,
     max_attempts=5,
 ):
@@ -607,10 +529,7 @@ def stream_with_retry(
     for attempt in range(max_attempts):
         try:
             if url is None:
-                token = refresh_token(app)
-                url = get_item(item["id"], drive_id, token)[
-                    "@microsoft.graph.downloadUrl"
-                ]
+                url = get_download_url(item["id"], drive_id, api, session)
             resume_from = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             headers = {"Range": f"bytes={resume_from}-"} if resume_from else {}
             with session.get(url, headers=headers, stream=True, timeout=60) as r:
