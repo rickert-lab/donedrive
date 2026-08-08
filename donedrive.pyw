@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License along with
 this program. If not, see <https://www.gnu.org/licenses/>.
 
 Author:     Christian Rickert <christian.rickert@cuanschutz.edu>
-Date:       2026-08-07
+Date:       2026-08-08
 Version:    0.2
 """
 
@@ -49,6 +49,10 @@ class DownloadCancelled(Exception):
     """Raised in worker threads when the user closes the window."""
 
 
+class DownloadMismatch(Exception):
+    """Raised when a completed download fails its size or hash check."""
+
+
 class OutOfDiskSpace(Exception):
     """Raised when a write fails because the destination volume is full."""
 
@@ -60,7 +64,6 @@ class QuickXorHash:
 
     BitsInLastCell = 32
     Shift = 11
-    Threshold = 600
     WidthInBits = 160
 
     _MASK64 = 0xFFFFFFFFFFFFFFFF
@@ -627,7 +630,7 @@ def stream_with_retry(
                     os.remove(part_path)
                 except OSError:
                     pass
-                raise IOError(
+                raise DownloadMismatch(
                     f"ERROR: {os.path.sep + os.path.relpath(part_path, dest_root)} [{format_size(actual_size)}?] ↑"
                 )
             # compare file hash
@@ -639,7 +642,7 @@ def stream_with_retry(
                         os.remove(part_path)
                     except OSError:
                         pass
-                    raise IOError(
+                    raise DownloadMismatch(
                         f"ERROR: {os.path.sep + os.path.relpath(part_path, dest_root)} [{format_size(actual_size)}!] ↑"
                     )
             # finalize download
@@ -651,17 +654,22 @@ def stream_with_retry(
                 raise
             err = e
             url = None
-        except OSError as e:  # must precede the broad IOError clause below
-            if e.errno not in (errno.ENOSPC, errno.EDQUOT):  # disk full, quota exceeded
-                raise
-            cancel_event.set()  # stop all workers: retrying cannot help
-            raise OutOfDiskSpace from e
-        except (
-            requests.ConnectionError,
-            requests.Timeout,
-            requests.exceptions.ChunkedEncodingError,
-            IOError,
-        ) as e:
+        except DownloadMismatch as e:
+            err = e
+            url = None
+        except OSError as e:  # requests exceptions subclass OSError as well
+            if e.errno in (errno.ENOSPC, errno.EDQUOT):  # disk full, quota exceeded
+                cancel_event.set()  # stop all workers: retrying cannot help
+                raise OutOfDiskSpace from e
+            if not isinstance(
+                e,
+                (
+                    requests.ConnectionError,
+                    requests.Timeout,
+                    requests.exceptions.ChunkedEncodingError,
+                ),
+            ):
+                raise  # local I/O failure: retrying cannot help
             err = e
             url = None  # force refresh next attempt
         if attempt == max_attempts - 1:
