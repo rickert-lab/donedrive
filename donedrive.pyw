@@ -22,6 +22,7 @@ Version:    0.2
 
 import base64
 import datetime
+import errno
 import os
 import stat
 import threading
@@ -46,6 +47,10 @@ cancel_event = threading.Event()  # set on window close to abort in-flight downl
 
 class DownloadCancelled(Exception):
     """Raised in worker threads when the user closes the window."""
+
+
+class OutOfDiskSpace(Exception):
+    """Raised when a write fails because the destination volume is full."""
 
 
 class QuickXorHash:
@@ -359,6 +364,8 @@ def download_folder(sharing_url, dest_dir):
             f.result()
         except (CancelledError, DownloadCancelled):  # window closed
             pass
+        except OutOfDiskSpace:
+            raise  # abort: report the cause, not the cancellation it triggered
         except Exception as e:
             errors.append(e)
     if errors:
@@ -367,8 +374,7 @@ def download_folder(sharing_url, dest_dir):
         raise errors[0]
     if cancel_event.is_set():
         raise DownloadCancelled
-    dirs, files, total = summarize_download(dest_dir)
-    return (dirs, files, total)
+    return summarize_download(dest_dir)
 
 
 def encode_sharing_url(url):
@@ -434,10 +440,11 @@ def get_root_item(sharing_url, api, session):
         if e.response.status_code not in (401, 403):
             raise
         raise RuntimeError(
-            os.linesep
-            + "NOTE: The share link requires a sign-in. Ask the sender to share "
-            'the folder with the "Anyone with the link" option instead: Shares '
-            "addressed to a specific person cannot be accessed by this program."
+            2
+            * os.linesep
+            + "ERROR: The share link requires a sign-in. Ask the sender to share "
+            'the folder with the "Anyone with the link" option instead - links '
+            "addressed to a specific person cannot be used by this program."
         ) from e
 
 
@@ -520,6 +527,7 @@ def spo_get(session, url, params=None, timeout=30):
 
 
 def start_download(url_var, dir_var, button):
+    cancel_event.clear()  # reset from a previous out-of-disk abort
     url = url_var.get().strip()
     dest = dir_var.get().strip()
     if not url or not dest:
@@ -531,7 +539,7 @@ def start_download(url_var, dir_var, button):
     def worker():
         try:
             start = time.time()
-            (dirs, files, total) = download_folder(url, dest)
+            dirs, files, total = download_folder(url, dest)
             stop = time.time()
             duration = stop - start
             with_rate = (
@@ -545,14 +553,21 @@ def start_download(url_var, dir_var, button):
                 f"Download completed in {format_duration(duration)}{with_rate}.",
                 flush=True,
             )
+        except OutOfDiskSpace:
+            print(f"{os.linesep}NOTE: Out of disk space.{os.linesep}", flush=True)
         except DownloadCancelled:
-            print(f"NOTE: Download cancelled.{os.linesep}", flush=True)
+            print(f"{os.linesep}NOTE: Download cancelled.{os.linesep}", flush=True)
+        except Exception as e:  # keep failures in the same stream as the file log
+            print(f"{os.linesep}{80 * '='}")
+            print(f"Download failed: {type(e).__name__}: {e}", flush=True)
         finally:
-            if not cancel_event.is_set():  # widget is gone after root.destroy()
+            try:
                 # marshal Tk call back to the main thread
                 button.after(0, lambda: button.config(state="normal"))
+            except (RuntimeError, tk.TclError):  # widget is gone after root.destroy()
+                pass
 
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=worker).start()  # non-daemon: joined before finalization
 
 
 def stream_with_retry(
@@ -620,6 +635,11 @@ def stream_with_retry(
                 raise
             err = e
             url = None
+        except OSError as e:  # must precede the broad IOError clause below
+            if e.errno not in (errno.ENOSPC, errno.EDQUOT):  # disk full, quota exceeded
+                raise
+            cancel_event.set()  # stop all workers: retrying cannot help
+            raise OutOfDiskSpace from e
         except (
             requests.ConnectionError,
             requests.Timeout,
@@ -667,5 +687,6 @@ def update_download_state(url_var, dir_var, button):
     button.config(state="normal" if (url_ok and dir_ok) else "disabled")
 
 
-# start GUI
-build_gui()
+if __name__ == "__main__":
+    # start GUI
+    build_gui()
