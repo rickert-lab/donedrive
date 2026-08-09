@@ -12,7 +12,6 @@ _donedrive_ offers a robust alternative to Microsoft's approach - effectively po
 >User access could be delegated to applications like _donedrive_ with user authentication: However, application access must finally be authorized by every admin of every single SharePoint installation. Therefore, _donedrive_ only accepts share links without any user authentication and without any password:
 >
 ><img src="./assets/share.png" alt="GUI with Anyone" width="50%">
->But it's still recommended to set an expiration date.
 
 A couple of features that _donedrive_ offers:
 
