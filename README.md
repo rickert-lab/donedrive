@@ -9,7 +9,7 @@ Microsoft imposes conservative [restrictions and limitations](https://support.mi
 _donedrive_ offers a robust alternative to Microsoft's approach - effectively positioned between the powerful OneDrive client and the simple SharePoint browser access. A single OneDrive share link is sufficient to start the download of shared data: _donedrive_ follows the link to obtain [anonymous access](https://learn.microsoft.com/en-us/sharepoint/shareable-links-anyone-specific-people-organization#anyone-links) to the share and enumerates its contents through SharePoint's endpoints.
 
 >[!IMPORTANT]
->User access could be delegated to applications like _donedrive_ with user authentication: However, application access must finally be authorized by every admin of every single SharePoint installation. Therefore, _donedrive_ only accepts share links without any user authentication and without any password:
+>User access could be delegated to applications like _donedrive_ with user authentication: However, application access would finally have to be authorized by every admin of all accessed SharePoint installations. Therefore, _donedrive_ only accepts share links without any user authentication and without any password:
 >
 ><img src="./assets/share.png" alt="GUI with Anyone" width="50%">
 
